@@ -1,100 +1,89 @@
-name: Advanced MyXL Patcher (APK-MITM)
+name: MyXL LSPatch (Signature Spoof + SSL Bypass)
 
 on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Link Download Direct (XAPK atau APK)'
+        description: 'Direct Link Download MyXL (XAPK/APK)'
         required: true
         type: string
 
 jobs:
-  patch-process:
+  lspatch-process:
     runs-on: ubuntu-latest
+    env:
+      _JAVA_OPTIONS: "-Xmx4096m"
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 1. Setup Environment (Java untuk Merge, Node untuk Patching)
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # 2. Install Tools yang Dibutuhkan
-      - name: Install Dependencies
+      - name: Install & Prepare Tools
         run: |
-          echo "Installing APK-MITM..."
-          npm install -g apk-mitm
+          # 1. Download LSPatch (Tool inti untuk inject module)
+          echo "Downloading LSPatch..."
+          wget https://github.com/LSPosed/LSPatch/releases/download/v0.6/lspatch.jar -O lspatch.jar
 
-          echo "Downloading APKEditor (Best for merging XAPK)..."
+          # 2. Download Modul SSL Unpinning (TrustMeAlready - Paling Ampuh)
+          echo "Downloading TrustMeAlready Module..."
+          wget https://github.com/ViRb3/TrustMeAlready/releases/download/v1.11/TrustMeAlready-v1.11-release.apk -O module.apk
+
+          # 3. Download APKEditor (Untuk Merge XAPK)
+          echo "Downloading APKEditor..."
           wget https://github.com/REAndroid/APKEditor/releases/download/V1.4.0/APKEditor-1.4.0.jar -O APKEditor.jar
 
-      # 3. Download File Target
-      - name: Download App
+      - name: Download Target App
         run: |
-          echo "Downloading from URL..."
+          echo "Downloading MyXL..."
           wget "${{ inputs.apk_url }}" -O input_file
           
-          # Deteksi tipe file (XAPK / APK)
           if unzip -t input_file > /dev/null 2>&1; then
             echo "FILE_TYPE=XAPK" >> $GITHUB_ENV
             mv input_file raw.xapk
           else
-            echo "File mungkin APK biasa atau corrupt, mencoba rename ke apk..."
             mv input_file raw.apk
             echo "FILE_TYPE=APK" >> $GITHUB_ENV
           fi
 
-      # 4. Proses Merge (Khusus jika input adalah XAPK)
-      - name: Merge XAPK to APK (If needed)
+      - name: Merge XAPK (If needed)
         if: env.FILE_TYPE == 'XAPK'
         run: |
-          echo "Detected XAPK. Extracting..."
+          echo "Extracting & Merging XAPK..."
           unzip raw.xapk -d extracted_xapk
-          
-          echo "Merging Split APKs into Single APK..."
-          # APKEditor 'm' command menggabungkan split config menjadi satu APK utuh
-          java -jar APKEditor.jar m -i extracted_xapk -o target.apk
-          
-          echo "Merge Complete. Target file: target.apk"
+          java -jar APKEditor.jar m -i extracted_xapk -o original.apk
+          rm -rf extracted_xapk raw.xapk
 
-      - name: Prepare APK (If input was already APK)
+      - name: Prepare APK (If needed)
         if: env.FILE_TYPE == 'APK'
-        run: |
-          mv raw.apk target.apk
+        run: mv raw.apk original.apk
 
-      # 5. EKSEKUSI APK-MITM (The Magic Step)
-      - name: Run APK-MITM (Bypass SSL Pinning)
+      - name: Execute LSPatch (The Fix)
         run: |
-          echo "Starting Patch Process..."
-          # apk-mitm akan:
-          # 1. Decode APK
-          # 2. Patch Network Security Config
-          # 3. Disable Certificate Pinning di code Smali
-          # 4. Encode & Sign ulang
+          echo "Running LSPatch..."
+          mkdir -p output
           
-          apk-mitm target.apk
+          # Syntax: java -jar lspatch.jar [target] -m [module] -f (force) -o [output_dir]
+          # LSPatch secara otomatis mempertahankan Signature Asli (Spoofing)
+          java -jar lspatch.jar original.apk -m module.apk -f -o output
           
-          # Hasil output default apk-mitm adalah: target-patched.apk
-          if [ -f "target-patched.apk" ]; then
-            echo "Patch Success!"
-            mv target-patched.apk MyXL-Mod-Bypass.apk
+          # Rename hasil output
+          find output -name "*.apk" -exec mv {} MyXL-LSPatch-Bypass.apk \;
+          
+          if [ -f "MyXL-LSPatch-Bypass.apk" ]; then
+             echo "LSPatch Success!"
           else
-            echo "Patch Failed! Cek log di atas."
-            exit 1
+             echo "LSPatch Failed!"
+             exit 1
           fi
 
-      # 6. Upload Hasil
       - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: MyXL-Bypass-Result
-          path: MyXL-Mod-Bypass.apk
+          name: MyXL-LSPatch-Result
+          path: MyXL-LSPatch-Bypass.apk

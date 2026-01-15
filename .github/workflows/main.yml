@@ -1,122 +1,60 @@
-name: Patch MyXL XAPK (Network Security)
-
-on:
-  workflow_dispatch:
-    inputs:
-      apk_url:
-        description: 'Direct Link Download XAPK MyXL'
-        required: true
-        type: string
-
-jobs:
-  inject-network-config:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java (Required)
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Install Tools (APKTool, Signer, APKEditor)
-        run: |
-          # 1. APKTool (Untuk Decompile/Recompile)
-          wget https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar -O apktool.jar
-          
-          # 2. Uber APK Signer (Untuk tanda tangan digital ulang)
-          wget https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
-          
-          # 3. APKEditor (Untuk menggabungkan XAPK menjadi satu APK utuh)
-          wget https://github.com/REAndroid/APKEditor/releases/download/V1.4.0/APKEditor-1.4.0.jar -O APKEditor.jar
-
-      - name: Download & Extract XAPK
-        run: |
-          echo "Downloading XAPK..."
-          wget "${{ inputs.apk_url }}" -O file.xapk
-          
-          echo "Extracting XAPK..."
-          unzip file.xapk -d extracted_xapk
-          
-          # Cek isi folder untuk memastikan download benar
-          ls -R extracted_xapk
-
-      - name: Merge XAPK to Single APK
-        run: |
-          echo "Merging Split APKs into one..."
-          # Command 'm' pada APKEditor menggabungkan folder split menjadi satu file apk
-          java -jar APKEditor.jar m -i extracted_xapk -o original.apk
-          
-          echo "Merge Success. original.apk created."
-
-      - name: Decompile APK
-        run: |
-          java -jar apktool.jar d original.apk -o decompiled_app -f
-
-      - name: Inject Network Security Config (Create XML)
-        run: |
-          # Membuat folder xml
-          mkdir -p decompiled_app/res/xml
-          
-          # Membuat file config agar user certificate terbaca (untuk sniffing)
-          cat <<EOF > decompiled_app/res/xml/network_security_config.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <network-security-config>
-              <base-config cleartextTrafficPermitted="true">
-                  <trust-anchors>
-                      <certificates src="system" />
-                      <certificates src="user" />
-                  </trust-anchors>
-              </base-config>
-          </network-security-config>
-          EOF
-          
-          echo "network_security_config.xml created."
-
-      - name: Patch AndroidManifest.xml
+      - name: Patch AndroidManifest & Stealth Cleanup
         run: |
           python3 -c "
           import re
           import os
-          
-          manifest_path = 'decompiled_app/AndroidManifest.xml'
-          
+          import shutil
+
+          # Konfigurasi Path
+          decompiled_dir = 'decompiled_app'
+          manifest_path = os.path.join(decompiled_dir, 'AndroidManifest.xml')
+          apktool_yml = os.path.join(decompiled_dir, 'apktool.yml')
+
+          # 1. ANTI-DETECTION: Hapus jejak Apktool (Sangat Penting!)
+          # Banyak app mengecek keberadaan file ini untuk mendeteksi modifikasi.
+          if os.path.exists(apktool_yml):
+              os.remove(apktool_yml)
+              print('[Stealth] apktool.yml removed (Anti-tamper bypass #1).')
+          else:
+              print('[Info] apktool.yml not found.')
+
+          # 2. PATCH MANIFEST
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   content = f.read()
-              
+
+              # A. Inject Network Security Config (Tanpa merusak struktur)
               if 'android:networkSecurityConfig' in content:
-                  print('Warning: Config already exists.')
+                  print('[Info] Config already exists. Skipping inject.')
               else:
-                  # Inject atribut ke dalam tag <application>
-                  new_content = re.sub(r'(<application)', r'\1 android:networkSecurityConfig=\"@xml/network_security_config\"', content, count=1)
-                  
-                  with open(manifest_path, 'w') as f:
-                      f.write(new_content)
-                  print('AndroidManifest.xml patched successfully.')
+                  # Kita gunakan regex yang lebih rapi
+                  content = re.sub(r'(<application)', r'\1 android:networkSecurityConfig=\"@xml/network_security_config\"', content, count=1)
+                  print('[Patch] Injected networkSecurityConfig.')
+
+              # B. Fix Native Libs (Wajib untuk XAPK/Split APK)
+              if 'android:extractNativeLibs' in content:
+                  content = re.sub(r'android:extractNativeLibs=\"false\"', r'android:extractNativeLibs=\"true\"', content)
+                  print('[Fix] Updated extractNativeLibs to true.')
+              else:
+                  content = re.sub(r'(<application)', r'\1 android:extractNativeLibs=\"true\"', content, count=1)
+                  print('[Patch] Injected extractNativeLibs=true.')
+              
+              # C. Enable Cleartext Traffic (Jaga-jaga untuk HTTP non-SSL)
+              if 'android:usesCleartextTraffic' not in content:
+                  content = re.sub(r'(<application)', r'\1 android:usesCleartextTraffic=\"true\"', content, count=1)
+                  print('[Patch] Injected usesCleartextTraffic=true.')
+
+              # D. STEALTH: JANGAN inject android:debuggable="true"
+              # App production akan menolak jalan jika debuggable=true. 
+              # Kita hapus flag debuggable jika ada (biar seolah-olah release build)
+              if 'android:debuggable=\"true\"' in content:
+                  content = content.replace('android:debuggable=\"true\"', 'android:debuggable=\"false\"')
+                  print('[Stealth] Removed debuggable flag to mimic release build.')
+
+              with open(manifest_path, 'w') as f:
+                  f.write(content)
+              print('[Success] AndroidManifest.xml patched with stealth method.')
           else:
-              print('Error: AndroidManifest.xml not found!')
+              print('[Error] AndroidManifest.xml not found!')
               exit(1)
           "
-
-      - name: Recompile APK
-        run: |
-          # Recompile folder yang sudah di-inject kembali menjadi APK
-          java -jar apktool.jar b decompiled_app -o unpatched.apk --use-aapt2
-
-      - name: Sign APK
-        run: |
-          # Sign APK agar bisa diinstall
-          java -jar signer.jar --apks unpatched.apk
-          
-          # Rename hasil akhir
-          mv unpatched-aligned-debugSigned.apk MyXL-Patched.apk
-
-      - name: Upload Result
-        uses: actions/upload-artifact@v4
-        with:
-          name: MyXL-Patched-APK
-          path: MyXL-Patched.apk

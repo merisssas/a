@@ -1,4 +1,4 @@
-name: MyXL LSPatch (Force Re-Sign & Align)
+name: MyXL V4 (TrustMeAlready + Clean Sign)
 
 on:
   workflow_dispatch:
@@ -24,26 +24,26 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install & Prepare Tools
+      - name: Install Tools
         run: |
-          # 1. Download LSPatch (Fixed Link)
+          # 1. LSPatch (Gunakan versi spesifik yang stabil)
           wget https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar -O lspatch.jar
 
-          # 2. Download Modul: JustTrustMe (Stabil)
-          wget https://github.com/Fuzion24/JustTrustMe/releases/download/v.2/JustTrustMe.apk -O module.apk
+          # 2. Module: TrustMeAlready (Kita pakai ini lagi karena JustTrustMe terbukti CRASH)
+          wget https://github.com/ViRb3/TrustMeAlready/releases/download/v1.11/TrustMeAlready-v1.11-release.apk -O module.apk
 
-          # 3. Download APKEditor
+          # 3. APKEditor (Merge XAPK)
           wget https://github.com/REAndroid/APKEditor/releases/download/V1.4.0/APKEditor-1.4.0.jar -O APKEditor.jar
 
-          # 4. Download Signer
+          # 4. Signer (Uber APK Signer)
           wget https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
           
-          # 5. Install ZIP tool (Untuk menghapus signature lama)
+          # 5. Zip utility
           sudo apt-get update && sudo apt-get install -y zip
 
-      - name: Download Target App
+      - name: Download App
         run: |
-          echo "Downloading MyXL..."
+          echo "Downloading..."
           wget "${{ inputs.apk_url }}" -O input_file
           
           if unzip -t input_file > /dev/null 2>&1; then
@@ -54,44 +54,46 @@ jobs:
             echo "FILE_TYPE=APK" >> $GITHUB_ENV
           fi
 
-      - name: Merge XAPK (If needed)
+      - name: Merge XAPK (Clean Merge)
         if: env.FILE_TYPE == 'XAPK'
         run: |
-          echo "Extracting & Merging XAPK..."
+          echo "Merging..."
           unzip raw.xapk -d extracted_xapk
           java -jar APKEditor.jar m -i extracted_xapk -o original.apk
-          rm -rf extracted_xapk raw.xapk
 
-      - name: Prepare APK (If needed)
+      - name: Prepare APK
         if: env.FILE_TYPE == 'APK'
         run: mv raw.apk original.apk
 
-      - name: Execute LSPatch
+      - name: Execute LSPatch (Inject Module)
         run: |
-          echo "Running LSPatch..."
+          echo "Patching..."
           mkdir -p output
           
-          # Inject module JustTrustMe dan spoof signature
+          # Gunakan module TrustMeAlready
+          # -f: Force overwrite
           java -jar lspatch.jar original.apk -m module.apk -f -o output
           
-          # Rename hasil agar pasti
+          # Cari file hasil patch (nama file output lspatch kadang berubah-ubah)
           find output -name "*.apk" -exec mv {} lspatched.apk \;
 
-      - name: Force Align & Sign (The Fix)
+      - name: FINAL FIX (Clean & Re-Sign)
         run: |
-          echo "Removing old signature to force re-align..."
-          # Hapus folder META-INF agar terlihat belum disign
+          echo "Stripping old signature..."
+          # Hapus folder META-INF sepenuhnya agar signer dipaksa bekerja dari nol
+          # Ini memperbaiki masalah "already signed SKIP"
           zip -d lspatched.apk META-INF/\*
           
-          echo "Signing and Aligning..."
-          # Sekarang signer akan terpaksa memproses file ini
-          java -jar signer.jar --apks lspatched.apk --out .
+          echo "Signing with Debug Key..."
+          # --overwrite: Timpa file lama
+          # --allowResign: Izinkan sign ulang
+          java -jar signer.jar --apks lspatched.apk --allowResign --overwrite --out .
           
-          # Rename hasil final (output default signer ada suffix -aligned-debugSigned)
-          mv lspatched-aligned-debugSigned.apk MyXL-Final-Bypass.apk
+          # Rename hasil akhir
+          mv lspatched-aligned-debugSigned.apk MyXL-Mod-Final.apk
 
       - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: MyXL-Final-Bypass
-          path: MyXL-Final-Bypass.apk
+          name: MyXL-Mod-Final
+          path: MyXL-Mod-Final.apk

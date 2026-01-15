@@ -1,4 +1,4 @@
-name: MyXL LSPatch (Fix Alignment & Stability)
+name: MyXL LSPatch (Force Re-Sign & Align)
 
 on:
   workflow_dispatch:
@@ -26,17 +26,20 @@ jobs:
 
       - name: Install & Prepare Tools
         run: |
-          # 1. Download LSPatch (Versi Stabil)
+          # 1. Download LSPatch (Fixed Link)
           wget https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar -O lspatch.jar
 
-          # 2. Download Modul: JustTrustMe (Sering lebih stabil drpd TrustMeAlready)
+          # 2. Download Modul: JustTrustMe (Stabil)
           wget https://github.com/Fuzion24/JustTrustMe/releases/download/v.2/JustTrustMe.apk -O module.apk
 
-          # 3. Download APKEditor (Merge XAPK)
+          # 3. Download APKEditor
           wget https://github.com/REAndroid/APKEditor/releases/download/V1.4.0/APKEditor-1.4.0.jar -O APKEditor.jar
 
-          # 4. Download Signer & Aligner (PENTING untuk mencegah crash di Android baru)
+          # 4. Download Signer
           wget https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
+          
+          # 5. Install ZIP tool (Untuk menghapus signature lama)
+          sudo apt-get update && sudo apt-get install -y zip
 
       - name: Download Target App
         run: |
@@ -71,20 +74,24 @@ jobs:
           # Inject module JustTrustMe dan spoof signature
           java -jar lspatch.jar original.apk -m module.apk -f -o output
           
-          # Cari file hasil patch
-          find output -name "*.apk" -exec mv {} lspatched-unsigned.apk \;
+          # Rename hasil agar pasti
+          find output -name "*.apk" -exec mv {} lspatched.apk \;
 
-      - name: Sign & Align (Fix Force Close)
+      - name: Force Align & Sign (The Fix)
         run: |
-          # Langkah ini KRUSIAL. Banyak HP menolak APK LSPatch mentah karena unaligned.
-          echo "Signing and Aligning..."
-          java -jar signer.jar --apks lspatched-unsigned.apk --out .
+          echo "Removing old signature to force re-align..."
+          # Hapus folder META-INF agar terlihat belum disign
+          zip -d lspatched.apk META-INF/\*
           
-          # Rename hasil final
-          mv lspatched-unsigned-aligned-debugSigned.apk MyXL-Final-Fix.apk
+          echo "Signing and Aligning..."
+          # Sekarang signer akan terpaksa memproses file ini
+          java -jar signer.jar --apks lspatched.apk --out .
+          
+          # Rename hasil final (output default signer ada suffix -aligned-debugSigned)
+          mv lspatched-aligned-debugSigned.apk MyXL-Final-Bypass.apk
 
       - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: MyXL-Final-Fix
-          path: MyXL-Final-Fix.apk
+          name: MyXL-Final-Bypass
+          path: MyXL-Final-Bypass.apk

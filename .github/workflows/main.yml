@@ -26,11 +26,12 @@ jobs:
 
       - name: Install & Prepare Tools
         run: |
-          # 1. Download LSPatch (Tool inti untuk inject module)
+          # 1. Download LSPatch (FIXED LINK)
           echo "Downloading LSPatch..."
-          wget https://github.com/LSPosed/LSPatch/releases/download/v0.6/lspatch.jar -O lspatch.jar
+          # Menggunakan link spesifik v0.6-398 yang valid
+          wget https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar -O lspatch.jar
 
-          # 2. Download Modul SSL Unpinning (TrustMeAlready - Paling Ampuh)
+          # 2. Download Modul SSL Unpinning (TrustMeAlready)
           echo "Downloading TrustMeAlready Module..."
           wget https://github.com/ViRb3/TrustMeAlready/releases/download/v1.11/TrustMeAlready-v1.11-release.apk -O module.apk
 
@@ -69,16 +70,18 @@ jobs:
           mkdir -p output
           
           # Syntax: java -jar lspatch.jar [target] -m [module] -f (force) -o [output_dir]
-          # LSPatch secara otomatis mempertahankan Signature Asli (Spoofing)
+          # Script ini akan menyuntikkan module TrustMeAlready ke dalam MyXL
+          # DAN memalsukan signature agar EncryptionUtil tidak crash
           java -jar lspatch.jar original.apk -m module.apk -f -o output
           
-          # Rename hasil output
+          # Rename hasil output (LSPatch kadang merubah nama file)
           find output -name "*.apk" -exec mv {} MyXL-LSPatch-Bypass.apk \;
           
           if [ -f "MyXL-LSPatch-Bypass.apk" ]; then
              echo "LSPatch Success!"
           else
-             echo "LSPatch Failed!"
+             echo "LSPatch Failed! Cek folder output:"
+             ls -R output
              exit 1
           fi
 

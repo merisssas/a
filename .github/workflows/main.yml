@@ -1,4 +1,4 @@
-name: Super Patcher V3 (MediaFire Fix)
+name: Super Patcher V4 (Smart Link Detection)
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
           pip install cloudscraper requests beautifulsoup4
 
-      - name: Download APK (Smart MediaFire Downloader)
+      - name: Download APK (Smart Detector)
         shell: python
         env:
           APK_URL: ${{ inputs.apk_url }}
@@ -49,33 +49,47 @@ jobs:
           import sys
           import re
           from bs4 import BeautifulSoup
+          from urllib.parse import urlparse
 
-          url = os.environ['APK_URL']
-          # Gunakan interpreter Chrome agar tidak terdeteksi bot
+          original_url = os.environ['APK_URL']
+          url = original_url
           scraper = cloudscraper.create_scraper(browser='chrome')
 
           print(f"🔗 Menganalisis URL: {url}")
 
-          # === LOGIKA KHUSUS MEDIAFIRE ===
+          # === LOGIKA DETEKSI LINK ===
+          need_scrape = False
+          
           if 'mediafire.com' in url:
-              print("🔥 MediaFire Link Terdeteksi! Mencoba mengambil direct link...")
+              # Cek apakah ini link "View" atau "Direct Download"
+              # Link view biasanya: www.mediafire.com/file/...
+              # Link download biasanya: download123.mediafire.com/...
+              
+              if 'download' in urlparse(url).netloc:
+                  print("⚡ Terdeteksi sebagai Direct Link MediaFire. Langsung gas download!")
+                  need_scrape = False
+              elif '/file/' in url:
+                  print("🔍 Terdeteksi sebagai Halaman View MediaFire. Mencari tombol download...")
+                  need_scrape = True
+              else:
+                  # Asumsi default scrape jika ragu
+                  need_scrape = True
+
+          if need_scrape:
               try:
                   html = scraper.get(url).text
                   soup = BeautifulSoup(html, 'html.parser')
                   
-                  # Mencari tombol download
                   download_btn = soup.find('a', {'id': 'downloadButton'})
                   
                   if download_btn and download_btn.get('href'):
                       url = download_btn.get('href')
-                      
-                      # [FIX UTAMA] Perbaiki URL jika diawali //
+                      # Fix protocol relative URL
                       if url.startswith('//'):
                           url = 'https:' + url
-                          
-                      print(f"✅ Direct Link ditemukan: {url}")
+                      print(f"✅ Direct Link ditemukan hasil scrape: {url}")
                   else:
-                      print("⚠️ Tombol tidak ketemu, mencoba Regex...")
+                      print("⚠️ Tombol JS tidak ketemu, mencoba Regex Fallback...")
                       match = re.search(r'href="((https?:)?//download[^"]+)"', html)
                       if match:
                           url = match.group(1)
@@ -83,40 +97,41 @@ jobs:
                               url = 'https:' + url
                           print(f"✅ Direct Link (Regex) ditemukan: {url}")
                       else:
-                          print("❌ FATAL: Tidak bisa mengekstrak link download.")
+                          print("❌ FATAL: Gagal Scrape. Pastikan link bukan folder.")
                           sys.exit(1)
               except Exception as e:
-                  print(f"❌ Error saat parsing MediaFire: {str(e)}")
+                  print(f"❌ Error Scrape: {str(e)}")
                   sys.exit(1)
 
           # === PROSES DOWNLOAD ===
           print(f"⬇️ Sedang mendownload dari: {url}")
           try:
-              # Stream download untuk handle file besar
               with scraper.get(url, stream=True, timeout=60) as r:
-                  r.raise_for_status()
+                  # Cek error HTTP (misal 404/403)
+                  if r.status_code != 200:
+                      print(f"❌ Gagal akses URL. Status Code: {r.status_code}")
+                      print("Saran: Link direct MediaFire cepat kadaluarsa. Gunakan link halaman (www.mediafire.com/file/...) saja.")
+                      sys.exit(1)
+
                   total_size = int(r.headers.get('content-length', 0))
                   
                   with open('target.apk', 'wb') as f:
                       dl_size = 0
-                      for chunk in r.iter_content(chunk_size=1024*1024): # 1MB chunks
+                      for chunk in r.iter_content(chunk_size=1024*1024): 
                           if chunk:
                               f.write(chunk)
                               dl_size += len(chunk)
-                              if total_size > 0:
-                                  # Print progress sederhana biar log tidak penuh
-                                  if dl_size % (5 * 1024 * 1024) == 0: # Update tiap 5MB
-                                      print(f"   ... {dl_size/1024/1024:.2f} MB downloaded")
+                              if total_size > 0 and dl_size % (5 * 1024 * 1024) == 0:
+                                  print(f"   ... {dl_size/1024/1024:.2f} MB")
                   
                   print(f"✅ Download Selesai. Total: {dl_size/1024/1024:.2f} MB")
                   
-                  # Validasi Ukuran (> 1MB)
                   if dl_size < 1048576: 
-                      print("❌ ERROR: File terlalu kecil (< 1MB). Cek apakah link valid.")
+                      print("❌ ERROR: File < 1MB. Kemungkinan HTML error page.")
                       sys.exit(1)
 
           except Exception as e:
-              print(f"❌ Download Gagal: {str(e)}")
+              print(f"❌ Download Gagal Total: {str(e)}")
               sys.exit(1)
 
       - name: Download Android Faker (Module)

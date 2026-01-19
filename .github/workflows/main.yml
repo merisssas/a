@@ -1,4 +1,4 @@
-name: Super Patcher V6 (Reqable Certificate Fix)
+name: Super Patcher V7 (LSPatch Fix)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.10' 
 
-      # [BARU] Langkah Membuat File Sertifikat Reqable
+      # Langkah Membuat File Sertifikat Reqable
       - name: Create Certificate File
         run: |
           cat <<EOF > reqable.pem
@@ -174,7 +174,7 @@ jobs:
         run: |
           echo "Membuka Network Security Config..."
           
-          # [FIX UTAMA] Menggunakan Sertifikat Reqable & Mencegah Prompt Interaktif
+          # Menggunakan Sertifikat Reqable & Mencegah Prompt Interaktif
           apk-mitm target.apk --certificate reqable.pem
           
           echo "✅ Patching Selesai, rename file..."
@@ -183,7 +183,10 @@ jobs:
       - name: Tahap 2 - Inject Spoofer (LSPatch)
         run: |
           echo "Menyuntikkan Module Spoofing..."
-          java -jar lspatch.jar step1.apk -m module.apk -f -l
+          
+          # [FIX UTAMA] Menambahkan angka '2' setelah -l
+          # -l 2 artinya Signature Bypass Level 2 (PM + OpenAT)
+          java -jar lspatch.jar step1.apk -m module.apk -f -l 2
           
           OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "step1-*-lspatch.apk" | head -n 1)
           if [ -z "$OUTPUT_LSPATCH" ]; then

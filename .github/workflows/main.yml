@@ -1,4 +1,4 @@
-name: MyXL Native (.so) Hunter
+name: MyXL Native (.so) Hunter (v2 - Bundle Support)
 
 on:
   workflow_dispatch:
@@ -20,35 +20,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y binutils unzip
 
-      - name: Download & Extract APK
+      - name: Download & Extract ALL APKs
         run: |
           echo "⬇️ Downloading..."
-          wget -U "Mozilla/5.0" -O temp.zip "${{ inputs.apk_url }}"
+          wget -U "Mozilla/5.0" -O temp_download.zip "${{ inputs.apk_url }}"
           
-          echo "📦 Extracting..."
-          # Cek tipe file (APK biasa atau Bundle)
-          unzip -l temp.zip > file_list.txt
+          # Buat folder kerja
+          mkdir -p raw_container
+          mkdir -p extracted_apk
           
-          if grep -q "base.apk" file_list.txt; then
-            echo "✅ Tipe: APP BUNDLE"
-            unzip -p temp.zip base.apk > target.apk
+          echo "📦 Membongkar Container..."
+          # Coba unzip file download (siapa tau isinya banyak APK)
+          if unzip -q temp_download.zip -d raw_container; then
+             echo "   -> Sukses unzip container."
           else
-            echo "✅ Tipe: APK STANDAR"
-            mv temp.zip target.apk
+             echo "   -> Gagal unzip (Mungkin ini APK Standar), memindahkan file..."
+             mv temp_download.zip raw_container/target.apk
           fi
           
-          # Ekstrak target.apk untuk ambil folder lib/
-          unzip -q target.apk -d extracted_apk
+          # Cari apakah ada file .apk di dalam hasil unzip tadi?
+          APK_COUNT=$(find raw_container -name "*.apk" | wc -l)
+          
+          if [ "$APK_COUNT" -gt 0 ]; then
+             echo "✅ Ditemukan $APK_COUNT file APK (Bundle/Split detected)."
+             echo "   -> Mengekstrak SEMUA APK untuk mencari library..."
+             # Ekstrak setiap file .apk yang ditemukan ke folder extracted_apk
+             find raw_container -name "*.apk" -exec unzip -q -o {} -d extracted_apk \;
+          else
+             echo "✅ Tipe: APK Standar (Single File)"
+             # Jika tidak ada .apk di dalam (karena file download itu sendiri adalah APK)
+             unzip -q -o raw_container/target.apk -d extracted_apk
+          fi
           
       - name: HUNTING DI FILE .SO
         run: |
-          echo "🔍 Memulai pencarian di folder lib/..."
+          echo "🔍 Memulai pencarian file .so..."
           
-          # Cari semua file .so
-          find extracted_apk/lib -name "*.so" > so_list.txt
+          # Cari file .so DI MANA SAJA (Recursive), jangan hanya di folder lib/
+          find extracted_apk -name "*.so" > so_list.txt
           
           if [ ! -s so_list.txt ]; then
-            echo "❌ GAGAL: Tidak ditemukan file .so (Native Libraries)."
+            echo "❌ GAGAL: Tidak ditemukan file .so (Native Libraries) sama sekali."
+            echo "   Pastikan link download benar (APKM/APK) dan bukan XAPK Installer aneh."
             exit 1
           fi
           
@@ -64,24 +77,26 @@ jobs:
             echo -e "\n➡️ Menganalisa: $so_file"
             
             # 1. Cari Basic Auth (Pola: Basic + spasi + karakter acak)
-            #    Kita cari string "Basic " lalu ambil konteksnya
             strings "$so_file" | grep -i "Basic " | head -n 5
             
             # 2. Cari Secret Key (Pola: String panjang acak 60-150 char)
-            #    Kita filter string yang panjangnya > 60 karakter dan < 200 karakter
-            #    Hanya ambil yang isinya huruf angka (alphanumeric)
+            #    Filter: panjang 60-150, hanya huruf/angka
             strings "$so_file" | awk 'length($0) > 60 && length($0) < 200' | grep -E '^[a-zA-Z0-9]+$' > candidates.txt
             
             if [ -s candidates.txt ]; then
-               echo "   [!] KANDIDAT SECRET KEY DITEMUKAN:"
+               echo "   [!] POTENSI SECRET KEY (Cek manual satu per satu):"
                cat candidates.txt
             fi
             
-            # 3. Cari Header Spesifik (X-Data, X-Signature)
-            #    Jika file ini mengandung string ini, kemungkinan besar kuncinya ada di file ini
-            if strings "$so_file" | grep -q -E "X-Data|X-Signature|Ax-Api-Signature"; then
-               echo "   [***] FILE INI MENGANDUNG LOGIC ENKRIPSI (Target Utama!)"
+            # 3. Cari Indikator Enkripsi
+            #    Mencari jejak header myXL
+            if strings "$so_file" | grep -q -E "X-Data|X-Signature|Ax-Api-Signature|mU1Y4n1"; then
+               echo "   [***] JACKPOT! FILE INI BERISI LOGIC ENKRIPSI myXL!"
+            fi
+            
+            # 4. Cari Potongan Key Lama (Siapa tau masih ada sisa-sisa)
+            if strings "$so_file" | grep -q "mU1Y4n1"; then
+               echo "   [***] DITEMUKAN POTONGAN KEY LAMA DI SINI!"
             fi
             
           done < so_list.txt
-

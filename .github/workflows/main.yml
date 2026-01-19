@@ -1,4 +1,4 @@
-name: Super Patcher V4 (Smart Link Detection)
+name: Super Patcher V5 (Non-Interactive Fix)
 
 on:
   workflow_dispatch:
@@ -61,10 +61,6 @@ jobs:
           need_scrape = False
           
           if 'mediafire.com' in url:
-              # Cek apakah ini link "View" atau "Direct Download"
-              # Link view biasanya: www.mediafire.com/file/...
-              # Link download biasanya: download123.mediafire.com/...
-              
               if 'download' in urlparse(url).netloc:
                   print("⚡ Terdeteksi sebagai Direct Link MediaFire. Langsung gas download!")
                   need_scrape = False
@@ -72,29 +68,24 @@ jobs:
                   print("🔍 Terdeteksi sebagai Halaman View MediaFire. Mencari tombol download...")
                   need_scrape = True
               else:
-                  # Asumsi default scrape jika ragu
                   need_scrape = True
 
           if need_scrape:
               try:
                   html = scraper.get(url).text
                   soup = BeautifulSoup(html, 'html.parser')
-                  
                   download_btn = soup.find('a', {'id': 'downloadButton'})
                   
                   if download_btn and download_btn.get('href'):
                       url = download_btn.get('href')
-                      # Fix protocol relative URL
-                      if url.startswith('//'):
-                          url = 'https:' + url
+                      if url.startswith('//'): url = 'https:' + url
                       print(f"✅ Direct Link ditemukan hasil scrape: {url}")
                   else:
                       print("⚠️ Tombol JS tidak ketemu, mencoba Regex Fallback...")
                       match = re.search(r'href="((https?:)?//download[^"]+)"', html)
                       if match:
                           url = match.group(1)
-                          if url.startswith('//'):
-                              url = 'https:' + url
+                          if url.startswith('//'): url = 'https:' + url
                           print(f"✅ Direct Link (Regex) ditemukan: {url}")
                       else:
                           print("❌ FATAL: Gagal Scrape. Pastikan link bukan folder.")
@@ -107,10 +98,8 @@ jobs:
           print(f"⬇️ Sedang mendownload dari: {url}")
           try:
               with scraper.get(url, stream=True, timeout=60) as r:
-                  # Cek error HTTP (misal 404/403)
                   if r.status_code != 200:
                       print(f"❌ Gagal akses URL. Status Code: {r.status_code}")
-                      print("Saran: Link direct MediaFire cepat kadaluarsa. Gunakan link halaman (www.mediafire.com/file/...) saja.")
                       sys.exit(1)
 
                   total_size = int(r.headers.get('content-length', 0))
@@ -121,11 +110,10 @@ jobs:
                           if chunk:
                               f.write(chunk)
                               dl_size += len(chunk)
-                              if total_size > 0 and dl_size % (5 * 1024 * 1024) == 0:
+                              if total_size > 0 and dl_size % (10 * 1024 * 1024) == 0:
                                   print(f"   ... {dl_size/1024/1024:.2f} MB")
                   
                   print(f"✅ Download Selesai. Total: {dl_size/1024/1024:.2f} MB")
-                  
                   if dl_size < 1048576: 
                       print("❌ ERROR: File < 1MB. Kemungkinan HTML error page.")
                       sys.exit(1)
@@ -147,7 +135,12 @@ jobs:
       - name: Tahap 1 - Patch Network (Reqable)
         run: |
           echo "Membuka Network Security Config..."
-          apk-mitm target.apk --wait
+          
+          # HAPUS flag --wait karena menyebabkan interaktif prompt yang error di CI/CD
+          # Tambah --certificate none untuk skip prompt sertifikat
+          apk-mitm target.apk --certificate none
+          
+          echo "✅ Patching Selesai, rename file..."
           mv *-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)

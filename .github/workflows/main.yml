@@ -1,4 +1,4 @@
-name: Super Patcher (Reqable + Device Spoofer)
+name: Super Patcher V2 (Fix Download)
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
       
-      - name: Setup Node.js (untuk apk-mitm)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -30,46 +30,82 @@ jobs:
       - name: Install Tools
         run: |
           npm install -g apk-mitm
-          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
+          # Menggunakan versi manager jar yang stabil
+          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/manager-v0.6-393-release.jar" -O lspatch.jar
 
-      - name: Download Target APK
+      - name: Download Target APK (Anti-Block)
         run: |
-          wget --content-disposition "${{ inputs.apk_url }}"
-          # Rename file apapun yang didownload menjadi target.apk agar mudah diproses
-          find . -maxdepth 1 -type f -name "*.apk" -not -name "lspatch.jar" -exec mv {} target.apk \;
-          echo "Target APK siap."
+          echo "Sedang mendownload APK dari sumber..."
+          
+          # Menggunakan User-Agent Chrome agar tidak diblokir server download
+          # Menambahkan --trust-server-names agar nama file sesuai redirect
+          wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               --content-disposition \
+               --trust-server-names \
+               "${{ inputs.apk_url }}"
+          
+          # Debugging: Tampilkan semua file yang ada dan ukurannya
+          echo "=== Daftar File Terdownload ==="
+          ls -lh
+          
+          # Cari file APK (kecuali tool lspatch)
+          FILE_NAME=$(find . -maxdepth 1 -type f -name "*.apk" -not -name "lspatch.jar" | head -n 1)
+          
+          # Validasi 1: Apakah file ada?
+          if [ -z "$FILE_NAME" ]; then
+            echo "❌ ERROR FATAL: Tidak ada file .apk yang terdownload. Cek kembali link Anda."
+            exit 1
+          fi
+          
+          # Validasi 2: Apakah file kosong? (Kurang dari 1KB)
+          FILE_SIZE=$(stat -c%s "$FILE_NAME")
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+             echo "❌ ERROR FATAL: File '$FILE_NAME' kosong atau rusak (Size: $FILE_SIZE bytes). Server mungkin memblokir download."
+             exit 1
+          fi
 
-      - name: Download Android Faker (Auto-Latest)
+          echo "✅ File Valid ditemukan: $FILE_NAME ($FILE_SIZE bytes)"
+          mv "$FILE_NAME" target.apk
+
+      - name: Download Android Faker (Module)
         run: |
-          # Script ini otomatis mencari release terbaru dari Android Faker di GitHub
-          # Android Faker dipilih karena fitur randomisasinya kuat
+          # Cari link download terbaru Android Faker via GitHub API
           LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
           
-          echo "Mendownload Android Faker dari: $LATEST_URL"
-          wget "$LATEST_URL" -O module.apk
+          if [ -z "$LATEST_URL" ]; then
+             echo "Gagal mencari Android Faker, menggunakan fallback link..."
+             wget "https://github.com/Android1500/AndroidFaker/releases/download/1.2.0/AndroidFaker_1.2.0.apk" -O module.apk
+          else
+             echo "Download Android Faker dari: $LATEST_URL"
+             wget "$LATEST_URL" -O module.apk
+          fi
 
-      - name: Tahap 1 - Patch Network (Reqable Support)
+      - name: Tahap 1 - Patch Network (Reqable)
         run: |
           echo "Membuka Network Security Config..."
-          # Ini membuat aplikasi percaya pada User Certificate (Reqable)
           apk-mitm target.apk --wait
           
-          # apk-mitm akan menghasilkan file berakhiran -patched.apk
+          # Rename hasil patch tahap 1
           mv *-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)
         run: |
           echo "Menyuntikkan Module Spoofing..."
-          # Inject module.apk ke dalam step1.apk
-          # -l (local) = module tertanam di dalam APK
-          # -f (force) = timpa jika ada error
+          # Inject module.apk ke dalam step1.apk secara embedded (-l)
           java -jar lspatch.jar step1.apk -m module.apk -f -l
           
-          # Rename hasil akhir
-          mv step1-393-lspatch.apk final_app.apk || mv *-lspatch.apk final_app.apk
+          # Rename hasil akhir agar rapi
+          # Mencari file hasil lspatch (biasanya ada angka versionnya)
+          OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "step1-*-lspatch.apk" | head -n 1)
+          if [ -z "$OUTPUT_LSPATCH" ]; then
+             # Coba pola nama lain jika gagal
+             OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "*-lspatch.apk" | head -n 1)
+          fi
+          
+          mv "$OUTPUT_LSPATCH" Final_Sniff_Spoof.apk
 
       - name: Upload Hasil Akhir
         uses: actions/upload-artifact@v4
         with:
-          name: App-Sniff-Spoof-Ready
-          path: final_app.apk
+          name: Aplikasi-Siap-Sniff-Spoof
+          path: Final_Sniff_Spoof.apk

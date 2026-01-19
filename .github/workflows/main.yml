@@ -4,10 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Direct Link Download APK (kosongkan jika upload manual)'
-        required: false
-      version_tag:
-        description: 'Versi App (misal: 8.10.0)'
+        description: 'Direct Link Download APK/APKM'
         required: true
 
 jobs:
@@ -32,21 +29,42 @@ jobs:
       - name: Install JADX
         run: |
           wget https://github.com/skylot/jadx/releases/download/v1.4.7/jadx-1.4.7.zip
-          unzip jadx-1.4.7.zip -d jadx
+          unzip -q jadx-1.4.7.zip -d jadx
           chmod +x jadx/bin/jadx
 
-      - name: Download APK
+      - name: Download APKM/APK
         if: ${{ inputs.apk_url != '' }}
         run: |
-          echo "Downloading from ${{ inputs.apk_url }}..."
-          wget -O target.apk "${{ inputs.apk_url }}"
+          echo "Downloading..."
+          # Simpan sebagai .zip agar mudah diekstrak
+          wget -O target.zip "${{ inputs.apk_url }}"
 
-      - name: Decompile APK (Ini memakan waktu...)
+      - name: Extract APKM (Bundle)
         run: |
-          # Decompile resources (-r) dan sources (-s) ke folder 'out'
-          ./jadx/bin/jadx -d out -r -s --no-debug-info target.apk
+          echo "Extracting Bundle..."
+          unzip target.zip -d extracted_apkm
+          
+          # Cek apakah ada base.apk (ciri khas APKM)
+          if [ -f "extracted_apkm/base.apk" ]; then
+            echo "APKM detected! Using base.apk as target."
+            mv extracted_apkm/base.apk target_final.apk
+          else
+            # Jika tidak ada base.apk, mungkin itu APK biasa, coba rename saja
+            echo "Not an APKM bundle? Trying to use original file."
+            mv target.zip target_final.apk
+          fi
+
+      - name: Decompile APK (Proses Berat...)
+        run: |
+          # Jalankan JADX pada target_final.apk
+          ./jadx/bin/jadx -d out -r -s --no-debug-info target_final.apk
 
       - name: Run Hunter Script
         run: |
-          # Jalankan script python pencari key
-          python hunt.py
+          # Pastikan folder out ada sebelum run script
+          if [ -d "out" ]; then
+            python hunt.py
+          else
+            echo "Folder 'out' tidak ditemukan! Decompile gagal total."
+            exit 1
+          fi

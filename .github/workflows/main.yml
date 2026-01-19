@@ -1,98 +1,75 @@
-name: MyXL Ultimate Dump (.so)
+name: Super Patcher (Reqable + Device Spoofer)
 
 on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Direct Link Download APK/APKM'
+        description: 'Link Direct Download APK Target'
         required: true
+        type: string
 
 jobs:
-  dump_everything:
+  inject-everything:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y binutils unzip
+      - name: Setup Environment
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      
+      - name: Setup Node.js (untuk apk-mitm)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Download & Extract ALL APKs
+      - name: Install Tools
         run: |
-          echo "⬇️ Downloading..."
-          wget -U "Mozilla/5.0" -O temp_download.zip "${{ inputs.apk_url }}"
-          
-          mkdir -p raw_container
-          mkdir -p extracted_apk
-          
-          echo "📦 Membongkar Container..."
-          if unzip -q temp_download.zip -d raw_container; then
-             echo "   -> Sukses unzip container."
-          else
-             echo "   -> Gagal unzip, anggap APK Standar."
-             mv temp_download.zip raw_container/target.apk
-          fi
-          
-          APK_COUNT=$(find raw_container -name "*.apk" | wc -l)
-          
-          if [ "$APK_COUNT" -gt 0 ]; then
-             echo "✅ Ditemukan $APK_COUNT file APK. Mengekstrak SEMUA..."
-             find raw_container -name "*.apk" -exec unzip -q -o {} -d extracted_apk \;
-          else
-             echo "✅ Tipe: APK Standar."
-             unzip -q -o raw_container/target.apk -d extracted_apk
-          fi
-          
-      - name: DUMP SEMUA STRING
-        run: |
-          echo "🔍 Memulai proses DUMPING..."
-          touch HASIL_DUMP.txt
-          
-          # Cari semua file .so
-          find extracted_apk -name "*.so" > so_list.txt
-          
-          if [ ! -s so_list.txt ]; then
-            echo "❌ GAGAL: Tidak ditemukan file .so."
-            exit 1
-          fi
-          
-          echo "Daftar File yang akan di-dump:"
-          cat so_list.txt
-          
-          # Loop dan sedot isinya
-          while read so_file; do
-            echo "Processing: $so_file"
-            echo "========================================================" >> HASIL_DUMP.txt
-            echo "FILE: $so_file" >> HASIL_DUMP.txt
-            echo "========================================================" >> HASIL_DUMP.txt
-            
-            # AMBIL SEMUA STRING (Minimal 10 karakter agar sampah hilang)
-            strings -n 10 "$so_file" >> HASIL_DUMP.txt
-            
-            echo -e "\n\n" >> HASIL_DUMP.txt
-          done < so_list.txt
-          
-          echo "✅ Selesai! Semua string tersimpan di HASIL_DUMP.txt"
+          npm install -g apk-mitm
+          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/manager-v0.6-393-release.jar" -O lspatch.jar
 
-      - name: PREVIEW CEPAT (Untuk Chat)
+      - name: Download Target APK
         run: |
-          echo "================================================="
-          echo " PREVIEW: STRING PANJANG (Kandidat Secret Key)"
-          echo "================================================="
-          # Tampilkan di log string yang panjangnya > 80 karakter (biasanya Key itu 100+ char)
-          # Kita filter hanya huruf & angka agar rapi
-          grep -E "^[a-zA-Z0-9]{80,200}$" HASIL_DUMP.txt | grep -v "0123456789" | head -n 50
-          
-          echo "================================================="
-          echo " PREVIEW: BASIC AUTH"
-          echo "================================================="
-          grep -i "Basic " HASIL_DUMP.txt | head -n 20
+          wget --content-disposition "${{ inputs.apk_url }}"
+          # Rename file apapun yang didownload menjadi target.apk agar mudah diproses
+          find . -maxdepth 1 -type f -name "*.apk" -not -name "lspatch.jar" -exec mv {} target.apk \;
+          echo "Target APK siap."
 
-      - name: Upload Artifact (Download Hasilnya Disini)
+      - name: Download Android Faker (Auto-Latest)
+        run: |
+          # Script ini otomatis mencari release terbaru dari Android Faker di GitHub
+          # Android Faker dipilih karena fitur randomisasinya kuat
+          LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
+          
+          echo "Mendownload Android Faker dari: $LATEST_URL"
+          wget "$LATEST_URL" -O module.apk
+
+      - name: Tahap 1 - Patch Network (Reqable Support)
+        run: |
+          echo "Membuka Network Security Config..."
+          # Ini membuat aplikasi percaya pada User Certificate (Reqable)
+          apk-mitm target.apk --wait
+          
+          # apk-mitm akan menghasilkan file berakhiran -patched.apk
+          mv *-patched.apk step1.apk
+
+      - name: Tahap 2 - Inject Spoofer (LSPatch)
+        run: |
+          echo "Menyuntikkan Module Spoofing..."
+          # Inject module.apk ke dalam step1.apk
+          # -l (local) = module tertanam di dalam APK
+          # -f (force) = timpa jika ada error
+          java -jar lspatch.jar step1.apk -m module.apk -f -l
+          
+          # Rename hasil akhir
+          mv step1-393-lspatch.apk final_app.apk || mv *-lspatch.apk final_app.apk
+
+      - name: Upload Hasil Akhir
         uses: actions/upload-artifact@v4
         with:
-          name: full-string-dump
-          path: HASIL_DUMP.txt
+          name: App-Sniff-Spoof-Ready
+          path: final_app.apk

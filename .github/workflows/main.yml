@@ -1,4 +1,4 @@
-name: MyXL Key Hunter (Debug Mode)
+name: MyXL Key Hunter (v3 - Smart Extract & Fallback)
 
 on:
   workflow_dispatch:
@@ -15,86 +15,97 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup Java 17
+      - name: Setup Java 21
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Install JADX
+      - name: Install Tools (JADX 1.5.0 & Apktool)
         run: |
-          wget https://github.com/skylot/jadx/releases/download/v1.4.7/jadx-1.4.7.zip
-          unzip -q jadx-1.4.7.zip -d jadx
+          # 1. Install JADX 1.5.0 (Terbaru)
+          wget https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip
+          unzip -q jadx-1.5.0.zip -d jadx
           chmod +x jadx/bin/jadx
+          
+          # 2. Install Apktool (Plan B untuk XML)
+          sudo apt-get update
+          sudo apt-get install -y apktool
 
-      - name: Download & Extract
+      - name: Smart Download & Prepare
         run: |
           echo "⬇️ Downloading..."
-          # Download sebagai zip
-          wget -O downloaded_file.zip "${{ inputs.apk_url }}"
+          wget -U "Mozilla/5.0" -O temp_download.zip "${{ inputs.apk_url }}"
           
-          echo "📂 Cek ukuran file:"
-          ls -lh downloaded_file.zip
+          echo "🕵️ Menganalisa Isi File..."
+          # Cek isi zip tanpa ekstrak
+          unzip -l temp_download.zip > file_list.txt
           
-          echo "📦 Extracting..."
-          unzip -q downloaded_file.zip -d extracted_content || echo "Unzip warning (lanjutkan saja)"
-          
-          echo "🔎 Mencari file APK..."
-          # Cari file bernama base.apk atau file .apk terbesar
-          find extracted_content -name "*.apk" -ls
-          
-          # Logic: Cari base.apk, kalau gak ada ambil APK terbesar
-          TARGET_APK=$(find extracted_content -name "base.apk" | head -n 1)
-          
-          if [ -z "$TARGET_APK" ]; then
-             echo "⚠️ base.apk tidak ditemukan, mencari file APK terbesar..."
-             TARGET_APK=$(find extracted_content -name "*.apk" -printf "%s %p\n" | sort -nr | head -n 1 | awk '{print $2}')
-          fi
-          
-          if [ -z "$TARGET_APK" ]; then
-             echo "❌ GAGAL: Tidak ada file .apk ditemukan dalam download!"
-             exit 1
-          fi
-          
-          echo "✅ Target ditemukan: $TARGET_APK"
-          # Rename ke target.apk di root folder agar mudah
-          mv "$TARGET_APK" target_final.apk
-
-      - name: Decompile APK (High Memory)
-        run: |
-          echo "🚀 Memulai Decompile pada target_final.apk..."
-          ls -lh target_final.apk
-          
-          # SETTING PENTING: Berikan 4GB RAM ke Java agar tidak crash
-          export JAVA_OPTS="-Xmx4g"
-          
-          # Jalankan JADX
-          # -d out: output folder
-          # -r: decompile resources (strings.xml)
-          # -s: decompile sources (java)
-          # --no-debug-info: hemat memory
-          ./jadx/bin/jadx -d out -r -s --no-debug-info target_final.apk
-
-      - name: Verify Output
-        run: |
-          if [ -d "out" ]; then
-            echo "✅ Decompile Selesai. Cek isi folder output:"
-            ls -F out/
+          if grep -q "base.apk" file_list.txt; then
+            echo "✅ Tipe: APP BUNDLE (APKM/XAPK)"
+            echo "   -> Mengambil base.apk..."
+            unzip -p temp_download.zip base.apk > target_final.apk
+            
+          elif grep -q "classes.dex" file_list.txt; then
+            echo "✅ Tipe: STANDARD APK"
+            echo "   -> Menggunakan file langsung..."
+            mv temp_download.zip target_final.apk
+            
           else
-            echo "❌ CRITICAL: Folder 'out' tidak terbentuk. JADX Gagal."
+            echo "⚠️ Format tidak dikenal atau file korup!"
+            echo "   -> Mencoba paksa rename ke .apk..."
+            mv temp_download.zip target_final.apk
+          fi
+          
+          echo "📂 Info File Target:"
+          ls -lh target_final.apk
+          file target_final.apk
+
+      - name: Decompile (JADX)
+        id: jadx_step
+        continue-on-error: true
+        run: |
+          echo "🚀 Memulai Decompile (Code & Resource)..."
+          export JAVA_OPTS="-Xmx6g"
+          
+          # Gunakan log level error untuk mengurangi noise, tapi verbose jika crash
+          ./jadx/bin/jadx -d out -r -s --no-debug-info --log-level error target_final.apk
+          
+          if [ -d "out/resources" ] || [ -d "out/sources" ]; then
+            echo "✅ JADX Sukses!"
+          else
+            echo "❌ JADX Gagal (Output folder kosong)."
             exit 1
           fi
 
+      - name: Fallback Decompile (Apktool)
+        if: steps.jadx_step.outcome == 'failure'
+        run: |
+          echo "⚠️ JADX Gagal. Mengaktifkan PLAN B: Apktool..."
+          echo "   (Ini akan membongkar Resources untuk mencari Basic Auth)"
+          
+          # Decode resources only (-r di apktool kebalikan jadx, -s skip source)
+          # Kita mau resources, jadi jangan skip resources.
+          apktool d -f -o out_apktool target_final.apk
+          
+          # Pindahkan hasil apktool ke folder out/resources agar script python bisa baca
+          mkdir -p out/resources
+          # Copy strings.xml jika ada
+          find out_apktool -name "strings.xml" -exec cp --parents {} out/resources/ \;
+          echo "✅ Apktool selesai."
+
       - name: Run Hunter Script
         run: |
-          if [ -f "hunt.py" ]; then
+          echo "🔍 Memulai Pencarian Key..."
+          if [ -d "out" ] || [ -d "out_apktool" ]; then
+            # Kita arahkan script python ke folder yang ada isinya
             python hunt.py
           else
-            echo "❌ Script hunt.py tidak ditemukan di repository!"
-            echo "Pastikan Anda sudah upload file hunt.py"
+            echo "❌ Semua metode gagal. File APK mungkin rusak/terenkripsi."
+            exit 1
           fi

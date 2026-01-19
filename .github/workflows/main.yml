@@ -29,36 +29,58 @@ jobs:
 
       - name: Install Tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2
           npm install -g apk-mitm
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
-      - name: Download Target APK (Anti-Block Fix)
+      - name: Download Target APK (Ultimate Fix)
         run: |
-          echo "Sedang mendownload APK dari sumber..."
+          echo "🔍 Mengecek Status Link..."
+          # Cek Header dulu untuk memastikan link hidup (Debug)
+          curl -I "${{ inputs.apk_url }}"
           
-          # Menggunakan CURL yang lebih robust dibanding wget
-          curl -L --fail --retry 3 \
-               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               -o target.apk \
-               "${{ inputs.apk_url }}"
+          echo "⬇️ Sedang mendownload dengan Aria2..."
           
-          # Debugging: Tampilkan ukuran file
+          # MENGGUNAKAN ARIA2C (Lebih kuat tembus blokir & stabil)
+          # -x 16: 16 Koneksi sekaligus
+          # -s 16: Split file jadi 16 bagian
+          # --header: Menambahkan Referer agar dianggap browser valid
+          
+          aria2c -x 16 -s 16 \
+            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            --header="Referer: https://catbox.moe/" \
+            --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+            --out=target.apk \
+            --check-certificate=false \
+            --allow-overwrite=true \
+            "${{ inputs.apk_url }}" || echo "Aria2 gagal, mencoba fallback..."
+
+          # Fallback ke Curl jika Aria2 gagal total (dengan opsi follow redirect agresif)
+          if [ ! -f target.apk ] || [ $(stat -c%s "target.apk") -lt 1024 ]; then
+            echo "⚠️ Aria2 gagal, mencoba metode Curl Fallback..."
+            curl -L -k --retry 3 \
+              -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+              -o target.apk \
+              "${{ inputs.apk_url }}"
+          fi
+
           echo "=== Info File ==="
           ls -lh target.apk
           
-          # Validasi: Apakah file kosong? (Kurang dari 1KB)
+          # Validasi Akhir
           if [ ! -f target.apk ]; then
-             echo "❌ ERROR: File tidak terdownload."
+             echo "❌ ERROR: File tidak terdownload sama sekali."
              exit 1
           fi
 
           FILE_SIZE=$(stat -c%s "target.apk")
           if [ "$FILE_SIZE" -lt 1024 ]; then
-             echo "❌ ERROR FATAL: File corrupt/kosong (Size: $FILE_SIZE bytes). Cek link download Anda."
+             echo "❌ ERROR FATAL: File kosong (Size: $FILE_SIZE bytes). Link Link Anda 100% Mati atau Server memblokir IP GitHub."
              exit 1
           fi
 
-          echo "✅ File Valid ditemukan ($FILE_SIZE bytes)"
+          echo "✅ File Valid! Siap diproses."
 
       - name: Download Android Faker (Module)
         run: |
@@ -75,7 +97,6 @@ jobs:
       - name: Tahap 1 - Patch Network (Reqable)
         run: |
           echo "Membuka Network Security Config..."
-          # target.apk sudah didefinisikan di step download, jadi langsung pakai
           apk-mitm target.apk --wait
           
           mv *-patched.apk step1.apk

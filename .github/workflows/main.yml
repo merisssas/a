@@ -27,81 +27,69 @@ jobs:
         with:
           node-version: '20'
 
-      # [BARU] Setup Python untuk Downloader Canggih
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10' 
-
-      - name: Install Tools & Dependencies
+      - name: Install Tools
         run: |
-          # Install tool patcher
           npm install -g apk-mitm
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
-          
-          # Install library Python anti-blokir
-          pip install cloudscraper requests
 
-      # [SOLUSI UTAMA] Menggunakan Python Cloudscraper untuk download
-      - name: Download Target APK (Python Anti-Block)
-        shell: python
+      # [FIX BARU] Download Menggunakan Node.js Native + Bypass SSL
+      - name: Download Target APK (NodeJS Bypass SSL)
         env:
           APK_URL: ${{ inputs.apk_url }}
+          # KUNCI UTAMA: Mematikan validasi SSL Handshake yang bikin error
+          NODE_TLS_REJECT_UNAUTHORIZED: '0'
         run: |
-          import cloudscraper
-          import sys
-          import os
+          echo "🚀 Membuat script downloader..."
+          
+          # Membuat script JS sederhana untuk download
+          cat << 'EOF' > download.js
+          const fs = require('fs');
+          const { Readable } = require('stream');
+          const { finished } = require('stream/promises');
 
-          url = os.environ['APK_URL']
-          print(f"🚀 Memulai download dari: {url}")
+          async function run() {
+            const url = process.env.APK_URL;
+            console.log(`Menghubungkan ke: ${url}`);
+            
+            try {
+              const response = await fetch(url, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  'Referer': 'https://catbox.moe/'
+                }
+              });
 
-          # Inisialisasi Scraper sebagai Chrome Browser (Bypass Cloudflare/WAF)
-          scraper = cloudscraper.create_scraper(browser='chrome')
+              if (!response.ok) {
+                throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+              }
 
-          try:
-              # Download dengan stream untuk menangani file besar
-              # Timeout 60 detik untuk koneksi awal
-              with scraper.get(url, stream=True, timeout=60) as r:
-                  
-                  # Cek jika status bukan 200 OK
-                  if r.status_code != 200:
-                      print(f"❌ Server menolak akses. Status Code: {r.status_code}")
-                      sys.exit(1)
-                  
-                  # Cek Header Size
-                  content_len = r.headers.get('content-length')
-                  if content_len:
-                      print(f"ℹ️ Ukuran File dari Header: {int(content_len) / 1024 / 1024:.2f} MB")
-                  else:
-                      print("ℹ️ Server tidak mengirim info ukuran file (Chunked download).")
+              const fileSize = response.headers.get('content-length');
+              console.log(`Ukuran File: ${fileSize ? (fileSize / 1024 / 1024).toFixed(2) + ' MB' : 'Unknown'}`);
 
-                  # Proses penulisan file
-                  with open('target.apk', 'wb') as f:
-                      total_downloaded = 0
-                      for chunk in r.iter_content(chunk_size=1024*1024): # 1MB chunks
-                          if chunk:
-                              f.write(chunk)
-                              total_downloaded += len(chunk)
-                  
-                  print(f"✅ Download Selesai. Total tersimpan di disk: {total_downloaded} bytes")
-                  
-                  # Validasi Ukuran (Minimal 100KB agar dianggap APK valid)
-                  if total_downloaded < 102400:
-                      print("❌ ERROR FATAL: File terlalu kecil (< 100KB). Kemungkinan IP GitHub diblokir total oleh file hosting.")
-                      sys.exit(1)
+              const fileStream = fs.createWriteStream('target.apk');
+              await finished(Readable.fromWeb(response.body).pipe(fileStream));
+              console.log("✅ Download Selesai!");
+            } catch (error) {
+              console.error("❌ Gagal Download:", error);
+              process.exit(1);
+            }
+          }
+          run();
+          EOF
 
-          except Exception as e:
-              print(f"❌ Script Error: {str(e)}")
-              sys.exit(1)
-
-      - name: Cek & Validasi File
-        run: |
+          # Jalankan script Node
+          node download.js
+          
+          # Validasi Akhir
           ls -lh target.apk
-          echo "File valid. Lanjut ke patching..."
+          FILE_SIZE=$(stat -c%s "target.apk")
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+             echo "❌ ERROR FATAL: File kosong/corrupt. Server memblokir total IP GitHub."
+             exit 1
+          fi
 
       - name: Download Android Faker (Module)
         run: |
-          # Menggunakan curl biasa untuk GitHub (GitHub API aman dari blokir)
           LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
           
           if [ -z "$LATEST_URL" ]; then
@@ -117,7 +105,6 @@ jobs:
           echo "Membuka Network Security Config..."
           apk-mitm target.apk --wait
           
-          # Rename hasil patch agar konsisten
           mv *-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)

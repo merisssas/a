@@ -1,4 +1,4 @@
-name: MyXL Native (.so) Hunter (v2 - Bundle Support)
+name: MyXL Ultimate Dump (.so)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
 
 jobs:
-  native_hunt:
+  dump_everything:
     runs-on: ubuntu-latest
     
     steps:
@@ -25,78 +25,74 @@ jobs:
           echo "⬇️ Downloading..."
           wget -U "Mozilla/5.0" -O temp_download.zip "${{ inputs.apk_url }}"
           
-          # Buat folder kerja
           mkdir -p raw_container
           mkdir -p extracted_apk
           
           echo "📦 Membongkar Container..."
-          # Coba unzip file download (siapa tau isinya banyak APK)
           if unzip -q temp_download.zip -d raw_container; then
              echo "   -> Sukses unzip container."
           else
-             echo "   -> Gagal unzip (Mungkin ini APK Standar), memindahkan file..."
+             echo "   -> Gagal unzip, anggap APK Standar."
              mv temp_download.zip raw_container/target.apk
           fi
           
-          # Cari apakah ada file .apk di dalam hasil unzip tadi?
           APK_COUNT=$(find raw_container -name "*.apk" | wc -l)
           
           if [ "$APK_COUNT" -gt 0 ]; then
-             echo "✅ Ditemukan $APK_COUNT file APK (Bundle/Split detected)."
-             echo "   -> Mengekstrak SEMUA APK untuk mencari library..."
-             # Ekstrak setiap file .apk yang ditemukan ke folder extracted_apk
+             echo "✅ Ditemukan $APK_COUNT file APK. Mengekstrak SEMUA..."
              find raw_container -name "*.apk" -exec unzip -q -o {} -d extracted_apk \;
           else
-             echo "✅ Tipe: APK Standar (Single File)"
-             # Jika tidak ada .apk di dalam (karena file download itu sendiri adalah APK)
+             echo "✅ Tipe: APK Standar."
              unzip -q -o raw_container/target.apk -d extracted_apk
           fi
           
-      - name: HUNTING DI FILE .SO
+      - name: DUMP SEMUA STRING
         run: |
-          echo "🔍 Memulai pencarian file .so..."
+          echo "🔍 Memulai proses DUMPING..."
+          touch HASIL_DUMP.txt
           
-          # Cari file .so DI MANA SAJA (Recursive), jangan hanya di folder lib/
+          # Cari semua file .so
           find extracted_apk -name "*.so" > so_list.txt
           
           if [ ! -s so_list.txt ]; then
-            echo "❌ GAGAL: Tidak ditemukan file .so (Native Libraries) sama sekali."
-            echo "   Pastikan link download benar (APKM/APK) dan bukan XAPK Installer aneh."
+            echo "❌ GAGAL: Tidak ditemukan file .so."
             exit 1
           fi
           
-          echo "📂 File .so ditemukan:"
+          echo "Daftar File yang akan di-dump:"
           cat so_list.txt
           
-          echo -e "\n========================================"
-          echo "       HASIL DUMP STRING (.so)"
-          echo "========================================"
-          
-          # Loop setiap file .so
+          # Loop dan sedot isinya
           while read so_file; do
-            echo -e "\n➡️ Menganalisa: $so_file"
+            echo "Processing: $so_file"
+            echo "========================================================" >> HASIL_DUMP.txt
+            echo "FILE: $so_file" >> HASIL_DUMP.txt
+            echo "========================================================" >> HASIL_DUMP.txt
             
-            # 1. Cari Basic Auth (Pola: Basic + spasi + karakter acak)
-            strings "$so_file" | grep -i "Basic " | head -n 5
+            # AMBIL SEMUA STRING (Minimal 10 karakter agar sampah hilang)
+            strings -n 10 "$so_file" >> HASIL_DUMP.txt
             
-            # 2. Cari Secret Key (Pola: String panjang acak 60-150 char)
-            #    Filter: panjang 60-150, hanya huruf/angka
-            strings "$so_file" | awk 'length($0) > 60 && length($0) < 200' | grep -E '^[a-zA-Z0-9]+$' > candidates.txt
-            
-            if [ -s candidates.txt ]; then
-               echo "   [!] POTENSI SECRET KEY (Cek manual satu per satu):"
-               cat candidates.txt
-            fi
-            
-            # 3. Cari Indikator Enkripsi
-            #    Mencari jejak header myXL
-            if strings "$so_file" | grep -q -E "X-Data|X-Signature|Ax-Api-Signature|mU1Y4n1"; then
-               echo "   [***] JACKPOT! FILE INI BERISI LOGIC ENKRIPSI myXL!"
-            fi
-            
-            # 4. Cari Potongan Key Lama (Siapa tau masih ada sisa-sisa)
-            if strings "$so_file" | grep -q "mU1Y4n1"; then
-               echo "   [***] DITEMUKAN POTONGAN KEY LAMA DI SINI!"
-            fi
-            
+            echo -e "\n\n" >> HASIL_DUMP.txt
           done < so_list.txt
+          
+          echo "✅ Selesai! Semua string tersimpan di HASIL_DUMP.txt"
+
+      - name: PREVIEW CEPAT (Untuk Chat)
+        run: |
+          echo "================================================="
+          echo " PREVIEW: STRING PANJANG (Kandidat Secret Key)"
+          echo "================================================="
+          # Tampilkan di log string yang panjangnya > 80 karakter (biasanya Key itu 100+ char)
+          # Kita filter hanya huruf & angka agar rapi
+          grep -E "^[a-zA-Z0-9]{80,200}$" HASIL_DUMP.txt | grep -v "0123456789" | head -n 50
+          
+          echo "================================================="
+          echo " PREVIEW: BASIC AUTH"
+          echo "================================================="
+          grep -i "Basic " HASIL_DUMP.txt | head -n 20
+
+      - name: Upload Artifact (Download Hasilnya Disini)
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-string-dump
+          path: HASIL_DUMP.txt

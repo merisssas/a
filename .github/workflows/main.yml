@@ -1,4 +1,4 @@
-name: Super Patcher V3 (MediaFire Support)
+name: Super Patcher V3 (MediaFire Fix)
 
 on:
   workflow_dispatch:
@@ -37,7 +37,6 @@ jobs:
         run: |
           npm install -g apk-mitm
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
-          # Install library untuk scrape MediaFire
           pip install cloudscraper requests beautifulsoup4
 
       - name: Download APK (Smart MediaFire Downloader)
@@ -52,6 +51,7 @@ jobs:
           from bs4 import BeautifulSoup
 
           url = os.environ['APK_URL']
+          # Gunakan interpreter Chrome agar tidak terdeteksi bot
           scraper = cloudscraper.create_scraper(browser='chrome')
 
           print(f"🔗 Menganalisis URL: {url}")
@@ -63,21 +63,27 @@ jobs:
                   html = scraper.get(url).text
                   soup = BeautifulSoup(html, 'html.parser')
                   
-                  # Mencari tombol download (biasanya id="downloadButton" atau aria-label="Download file")
+                  # Mencari tombol download
                   download_btn = soup.find('a', {'id': 'downloadButton'})
                   
                   if download_btn and download_btn.get('href'):
                       url = download_btn.get('href')
+                      
+                      # [FIX UTAMA] Perbaiki URL jika diawali //
+                      if url.startswith('//'):
+                          url = 'https:' + url
+                          
                       print(f"✅ Direct Link ditemukan: {url}")
                   else:
-                      print("❌ Gagal mengekstrak link MediaFire. Mencoba pola regex...")
-                      # Fallback Regex
-                      match = re.search(r'href="(https://download[^"]+)"', html)
+                      print("⚠️ Tombol tidak ketemu, mencoba Regex...")
+                      match = re.search(r'href="((https?:)?//download[^"]+)"', html)
                       if match:
                           url = match.group(1)
+                          if url.startswith('//'):
+                              url = 'https:' + url
                           print(f"✅ Direct Link (Regex) ditemukan: {url}")
                       else:
-                          print("❌ FATAL: Tidak bisa menemukan tombol download di halaman MediaFire.")
+                          print("❌ FATAL: Tidak bisa mengekstrak link download.")
                           sys.exit(1)
               except Exception as e:
                   print(f"❌ Error saat parsing MediaFire: {str(e)}")
@@ -86,6 +92,7 @@ jobs:
           # === PROSES DOWNLOAD ===
           print(f"⬇️ Sedang mendownload dari: {url}")
           try:
+              # Stream download untuk handle file besar
               with scraper.get(url, stream=True, timeout=60) as r:
                   r.raise_for_status()
                   total_size = int(r.headers.get('content-length', 0))
@@ -97,17 +104,15 @@ jobs:
                               f.write(chunk)
                               dl_size += len(chunk)
                               if total_size > 0:
-                                  print(f"   Progress: {int(dl_size/total_size*100)}% ({dl_size/1024/1024:.2f} MB)")
+                                  # Print progress sederhana biar log tidak penuh
+                                  if dl_size % (5 * 1024 * 1024) == 0: # Update tiap 5MB
+                                      print(f"   ... {dl_size/1024/1024:.2f} MB downloaded")
                   
-                  print(f"✅ Download Selesai. Total: {dl_size} bytes")
+                  print(f"✅ Download Selesai. Total: {dl_size/1024/1024:.2f} MB")
                   
-                  # Validasi Ukuran (APK biasanya > 1MB)
+                  # Validasi Ukuran (> 1MB)
                   if dl_size < 1048576: 
-                      print("❌ ERROR: File terlalu kecil (< 1MB). Kemungkinan yang terdownload bukan APK tapi HTML.")
-                      # Cek isi file
-                      with open('target.apk', 'r', errors='ignore') as f:
-                          head = f.read(200)
-                          print(f"   Header File: {head}")
+                      print("❌ ERROR: File terlalu kecil (< 1MB). Cek apakah link valid.")
                       sys.exit(1)
 
           except Exception as e:
@@ -119,10 +124,8 @@ jobs:
           LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
           
           if [ -z "$LATEST_URL" ]; then
-             echo "Fallback link..."
              wget "https://github.com/Android1500/AndroidFaker/releases/download/1.2.0/AndroidFaker_1.2.0.apk" -O module.apk
           else
-             echo "Download dari: $LATEST_URL"
              wget "$LATEST_URL" -O module.apk
           fi
 
@@ -130,8 +133,6 @@ jobs:
         run: |
           echo "Membuka Network Security Config..."
           apk-mitm target.apk --wait
-          
-          # Rename hasil patch agar konsisten
           mv *-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)

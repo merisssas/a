@@ -1,4 +1,4 @@
-name: MyXL Key Hunter (v3 - Smart Extract & Fallback)
+name: MyXL Native (.so) Hunter
 
 on:
   workflow_dispatch:
@@ -8,104 +8,80 @@ on:
         required: true
 
 jobs:
-  hunt:
+  native_hunt:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup Java 21
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install Tools (JADX 1.5.0 & Apktool)
+      - name: Setup Tools
         run: |
-          # 1. Install JADX 1.5.0 (Terbaru)
-          wget https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip
-          unzip -q jadx-1.5.0.zip -d jadx
-          chmod +x jadx/bin/jadx
-          
-          # 2. Install Apktool (Plan B untuk XML)
           sudo apt-get update
-          sudo apt-get install -y apktool
+          sudo apt-get install -y binutils unzip
 
-      - name: Smart Download & Prepare
+      - name: Download & Extract APK
         run: |
           echo "⬇️ Downloading..."
-          wget -U "Mozilla/5.0" -O temp_download.zip "${{ inputs.apk_url }}"
+          wget -U "Mozilla/5.0" -O temp.zip "${{ inputs.apk_url }}"
           
-          echo "🕵️ Menganalisa Isi File..."
-          # Cek isi zip tanpa ekstrak
-          unzip -l temp_download.zip > file_list.txt
+          echo "📦 Extracting..."
+          # Cek tipe file (APK biasa atau Bundle)
+          unzip -l temp.zip > file_list.txt
           
           if grep -q "base.apk" file_list.txt; then
-            echo "✅ Tipe: APP BUNDLE (APKM/XAPK)"
-            echo "   -> Mengambil base.apk..."
-            unzip -p temp_download.zip base.apk > target_final.apk
-            
-          elif grep -q "classes.dex" file_list.txt; then
-            echo "✅ Tipe: STANDARD APK"
-            echo "   -> Menggunakan file langsung..."
-            mv temp_download.zip target_final.apk
-            
+            echo "✅ Tipe: APP BUNDLE"
+            unzip -p temp.zip base.apk > target.apk
           else
-            echo "⚠️ Format tidak dikenal atau file korup!"
-            echo "   -> Mencoba paksa rename ke .apk..."
-            mv temp_download.zip target_final.apk
+            echo "✅ Tipe: APK STANDAR"
+            mv temp.zip target.apk
           fi
           
-          echo "📂 Info File Target:"
-          ls -lh target_final.apk
-          file target_final.apk
-
-      - name: Decompile (JADX)
-        id: jadx_step
-        continue-on-error: true
+          # Ekstrak target.apk untuk ambil folder lib/
+          unzip -q target.apk -d extracted_apk
+          
+      - name: HUNTING DI FILE .SO
         run: |
-          echo "🚀 Memulai Decompile (Code & Resource)..."
-          export JAVA_OPTS="-Xmx6g"
+          echo "🔍 Memulai pencarian di folder lib/..."
           
-          # Gunakan log level error untuk mengurangi noise, tapi verbose jika crash
-          ./jadx/bin/jadx -d out -r -s --no-debug-info --log-level error target_final.apk
+          # Cari semua file .so
+          find extracted_apk/lib -name "*.so" > so_list.txt
           
-          if [ -d "out/resources" ] || [ -d "out/sources" ]; then
-            echo "✅ JADX Sukses!"
-          else
-            echo "❌ JADX Gagal (Output folder kosong)."
+          if [ ! -s so_list.txt ]; then
+            echo "❌ GAGAL: Tidak ditemukan file .so (Native Libraries)."
             exit 1
           fi
-
-      - name: Fallback Decompile (Apktool)
-        if: steps.jadx_step.outcome == 'failure'
-        run: |
-          echo "⚠️ JADX Gagal. Mengaktifkan PLAN B: Apktool..."
-          echo "   (Ini akan membongkar Resources untuk mencari Basic Auth)"
           
-          # Decode resources only (-r di apktool kebalikan jadx, -s skip source)
-          # Kita mau resources, jadi jangan skip resources.
-          apktool d -f -o out_apktool target_final.apk
+          echo "📂 File .so ditemukan:"
+          cat so_list.txt
           
-          # Pindahkan hasil apktool ke folder out/resources agar script python bisa baca
-          mkdir -p out/resources
-          # Copy strings.xml jika ada
-          find out_apktool -name "strings.xml" -exec cp --parents {} out/resources/ \;
-          echo "✅ Apktool selesai."
+          echo -e "\n========================================"
+          echo "       HASIL DUMP STRING (.so)"
+          echo "========================================"
+          
+          # Loop setiap file .so
+          while read so_file; do
+            echo -e "\n➡️ Menganalisa: $so_file"
+            
+            # 1. Cari Basic Auth (Pola: Basic + spasi + karakter acak)
+            #    Kita cari string "Basic " lalu ambil konteksnya
+            strings "$so_file" | grep -i "Basic " | head -n 5
+            
+            # 2. Cari Secret Key (Pola: String panjang acak 60-150 char)
+            #    Kita filter string yang panjangnya > 60 karakter dan < 200 karakter
+            #    Hanya ambil yang isinya huruf angka (alphanumeric)
+            strings "$so_file" | awk 'length($0) > 60 && length($0) < 200' | grep -E '^[a-zA-Z0-9]+$' > candidates.txt
+            
+            if [ -s candidates.txt ]; then
+               echo "   [!] KANDIDAT SECRET KEY DITEMUKAN:"
+               cat candidates.txt
+            fi
+            
+            # 3. Cari Header Spesifik (X-Data, X-Signature)
+            #    Jika file ini mengandung string ini, kemungkinan besar kuncinya ada di file ini
+            if strings "$so_file" | grep -q -E "X-Data|X-Signature|Ax-Api-Signature"; then
+               echo "   [***] FILE INI MENGANDUNG LOGIC ENKRIPSI (Target Utama!)"
+            fi
+            
+          done < so_list.txt
 
-      - name: Run Hunter Script
-        run: |
-          echo "🔍 Memulai Pencarian Key..."
-          if [ -d "out" ] || [ -d "out_apktool" ]; then
-            # Kita arahkan script python ke folder yang ada isinya
-            python hunt.py
-          else
-            echo "❌ Semua metode gagal. File APK mungkin rusak/terenkripsi."
-            exit 1
-          fi

@@ -16,81 +16,99 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Environment
+      - name: Setup Java (Temurin 17)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       
-      - name: Setup Node.js
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install Tools
+      # [BARU] Setup Python untuk Downloader Canggih
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10' 
+
+      - name: Install Tools & Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y aria2
+          # Install tool patcher
           npm install -g apk-mitm
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
+          
+          # Install library Python anti-blokir
+          pip install cloudscraper requests
 
-      - name: Download Target APK (Ultimate Fix)
+      # [SOLUSI UTAMA] Menggunakan Python Cloudscraper untuk download
+      - name: Download Target APK (Python Anti-Block)
+        shell: python
+        env:
+          APK_URL: ${{ inputs.apk_url }}
         run: |
-          echo "🔍 Mengecek Status Link..."
-          # Cek Header dulu untuk memastikan link hidup (Debug)
-          curl -I "${{ inputs.apk_url }}"
-          
-          echo "⬇️ Sedang mendownload dengan Aria2..."
-          
-          # MENGGUNAKAN ARIA2C (Lebih kuat tembus blokir & stabil)
-          # -x 16: 16 Koneksi sekaligus
-          # -s 16: Split file jadi 16 bagian
-          # --header: Menambahkan Referer agar dianggap browser valid
-          
-          aria2c -x 16 -s 16 \
-            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            --header="Referer: https://catbox.moe/" \
-            --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
-            --out=target.apk \
-            --check-certificate=false \
-            --allow-overwrite=true \
-            "${{ inputs.apk_url }}" || echo "Aria2 gagal, mencoba fallback..."
+          import cloudscraper
+          import sys
+          import os
 
-          # Fallback ke Curl jika Aria2 gagal total (dengan opsi follow redirect agresif)
-          if [ ! -f target.apk ] || [ $(stat -c%s "target.apk") -lt 1024 ]; then
-            echo "⚠️ Aria2 gagal, mencoba metode Curl Fallback..."
-            curl -L -k --retry 3 \
-              -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-              -o target.apk \
-              "${{ inputs.apk_url }}"
-          fi
+          url = os.environ['APK_URL']
+          print(f"🚀 Memulai download dari: {url}")
 
-          echo "=== Info File ==="
+          # Inisialisasi Scraper sebagai Chrome Browser (Bypass Cloudflare/WAF)
+          scraper = cloudscraper.create_scraper(browser='chrome')
+
+          try:
+              # Download dengan stream untuk menangani file besar
+              # Timeout 60 detik untuk koneksi awal
+              with scraper.get(url, stream=True, timeout=60) as r:
+                  
+                  # Cek jika status bukan 200 OK
+                  if r.status_code != 200:
+                      print(f"❌ Server menolak akses. Status Code: {r.status_code}")
+                      sys.exit(1)
+                  
+                  # Cek Header Size
+                  content_len = r.headers.get('content-length')
+                  if content_len:
+                      print(f"ℹ️ Ukuran File dari Header: {int(content_len) / 1024 / 1024:.2f} MB")
+                  else:
+                      print("ℹ️ Server tidak mengirim info ukuran file (Chunked download).")
+
+                  # Proses penulisan file
+                  with open('target.apk', 'wb') as f:
+                      total_downloaded = 0
+                      for chunk in r.iter_content(chunk_size=1024*1024): # 1MB chunks
+                          if chunk:
+                              f.write(chunk)
+                              total_downloaded += len(chunk)
+                  
+                  print(f"✅ Download Selesai. Total tersimpan di disk: {total_downloaded} bytes")
+                  
+                  # Validasi Ukuran (Minimal 100KB agar dianggap APK valid)
+                  if total_downloaded < 102400:
+                      print("❌ ERROR FATAL: File terlalu kecil (< 100KB). Kemungkinan IP GitHub diblokir total oleh file hosting.")
+                      sys.exit(1)
+
+          except Exception as e:
+              print(f"❌ Script Error: {str(e)}")
+              sys.exit(1)
+
+      - name: Cek & Validasi File
+        run: |
           ls -lh target.apk
-          
-          # Validasi Akhir
-          if [ ! -f target.apk ]; then
-             echo "❌ ERROR: File tidak terdownload sama sekali."
-             exit 1
-          fi
-
-          FILE_SIZE=$(stat -c%s "target.apk")
-          if [ "$FILE_SIZE" -lt 1024 ]; then
-             echo "❌ ERROR FATAL: File kosong (Size: $FILE_SIZE bytes). Link Link Anda 100% Mati atau Server memblokir IP GitHub."
-             exit 1
-          fi
-
-          echo "✅ File Valid! Siap diproses."
+          echo "File valid. Lanjut ke patching..."
 
       - name: Download Android Faker (Module)
         run: |
+          # Menggunakan curl biasa untuk GitHub (GitHub API aman dari blokir)
           LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
           
           if [ -z "$LATEST_URL" ]; then
-             echo "Gagal mencari Android Faker, menggunakan fallback link..."
+             echo "Fallback link..."
              wget "https://github.com/Android1500/AndroidFaker/releases/download/1.2.0/AndroidFaker_1.2.0.apk" -O module.apk
           else
-             echo "Download Android Faker dari: $LATEST_URL"
+             echo "Download dari: $LATEST_URL"
              wget "$LATEST_URL" -O module.apk
           fi
 
@@ -99,6 +117,7 @@ jobs:
           echo "Membuka Network Security Config..."
           apk-mitm target.apk --wait
           
+          # Rename hasil patch agar konsisten
           mv *-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)

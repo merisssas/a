@@ -30,7 +30,7 @@ jobs:
       - name: Install Tools
         run: |
           npm install -g apk-mitm
-          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/manager-v0.6-393-release.jar" -O lspatch.jar
+          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
       - name: Download Target APK
         run: |

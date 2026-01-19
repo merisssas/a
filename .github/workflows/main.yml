@@ -30,46 +30,38 @@ jobs:
       - name: Install Tools
         run: |
           npm install -g apk-mitm
-          # Menggunakan versi manager jar yang stabil
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
-      - name: Download Target APK (Anti-Block)
+      - name: Download Target APK (Anti-Block Fix)
         run: |
           echo "Sedang mendownload APK dari sumber..."
           
-          # Menggunakan User-Agent Chrome agar tidak diblokir server download
-          # Menambahkan --trust-server-names agar nama file sesuai redirect
-          wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               --content-disposition \
-               --trust-server-names \
+          # Menggunakan CURL yang lebih robust dibanding wget
+          curl -L --fail --retry 3 \
+               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               -o target.apk \
                "${{ inputs.apk_url }}"
           
-          # Debugging: Tampilkan semua file yang ada dan ukurannya
-          echo "=== Daftar File Terdownload ==="
-          ls -lh
+          # Debugging: Tampilkan ukuran file
+          echo "=== Info File ==="
+          ls -lh target.apk
           
-          # Cari file APK (kecuali tool lspatch)
-          FILE_NAME=$(find . -maxdepth 1 -type f -name "*.apk" -not -name "lspatch.jar" | head -n 1)
-          
-          # Validasi 1: Apakah file ada?
-          if [ -z "$FILE_NAME" ]; then
-            echo "❌ ERROR FATAL: Tidak ada file .apk yang terdownload. Cek kembali link Anda."
-            exit 1
-          fi
-          
-          # Validasi 2: Apakah file kosong? (Kurang dari 1KB)
-          FILE_SIZE=$(stat -c%s "$FILE_NAME")
-          if [ "$FILE_SIZE" -lt 1024 ]; then
-             echo "❌ ERROR FATAL: File '$FILE_NAME' kosong atau rusak (Size: $FILE_SIZE bytes). Server mungkin memblokir download."
+          # Validasi: Apakah file kosong? (Kurang dari 1KB)
+          if [ ! -f target.apk ]; then
+             echo "❌ ERROR: File tidak terdownload."
              exit 1
           fi
 
-          echo "✅ File Valid ditemukan: $FILE_NAME ($FILE_SIZE bytes)"
-          mv "$FILE_NAME" target.apk
+          FILE_SIZE=$(stat -c%s "target.apk")
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+             echo "❌ ERROR FATAL: File corrupt/kosong (Size: $FILE_SIZE bytes). Cek link download Anda."
+             exit 1
+          fi
+
+          echo "✅ File Valid ditemukan ($FILE_SIZE bytes)"
 
       - name: Download Android Faker (Module)
         run: |
-          # Cari link download terbaru Android Faker via GitHub API
           LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
           
           if [ -z "$LATEST_URL" ]; then
@@ -83,22 +75,18 @@ jobs:
       - name: Tahap 1 - Patch Network (Reqable)
         run: |
           echo "Membuka Network Security Config..."
+          # target.apk sudah didefinisikan di step download, jadi langsung pakai
           apk-mitm target.apk --wait
           
-          # Rename hasil patch tahap 1
           mv *-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)
         run: |
           echo "Menyuntikkan Module Spoofing..."
-          # Inject module.apk ke dalam step1.apk secara embedded (-l)
           java -jar lspatch.jar step1.apk -m module.apk -f -l
           
-          # Rename hasil akhir agar rapi
-          # Mencari file hasil lspatch (biasanya ada angka versionnya)
           OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "step1-*-lspatch.apk" | head -n 1)
           if [ -z "$OUTPUT_LSPATCH" ]; then
-             # Coba pola nama lain jika gagal
              OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "*-lspatch.apk" | head -n 1)
           fi
           

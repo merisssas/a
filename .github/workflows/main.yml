@@ -1,99 +1,52 @@
-name: MyXL V4 (TrustMeAlready + Clean Sign)
+name: MyXL Key Hunter
 
 on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Direct Link Download MyXL (XAPK/APK)'
+        description: 'Direct Link Download APK (kosongkan jika upload manual)'
+        required: false
+      version_tag:
+        description: 'Versi App (misal: 8.10.0)'
         required: true
-        type: string
 
 jobs:
-  lspatch-process:
+  hunt:
     runs-on: ubuntu-latest
-    env:
-      _JAVA_OPTIONS: "-Xmx4096m"
-
+    
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - name: Setup Java (Untuk JADX)
+        uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Tools
-        run: |
-          # 1. LSPatch (Gunakan versi spesifik yang stabil)
-          wget https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar -O lspatch.jar
-
-          # 2. Module: TrustMeAlready (Kita pakai ini lagi karena JustTrustMe terbukti CRASH)
-          wget https://github.com/ViRb3/TrustMeAlready/releases/download/v1.11/TrustMeAlready-v1.11-release.apk -O module.apk
-
-          # 3. APKEditor (Merge XAPK)
-          wget https://github.com/REAndroid/APKEditor/releases/download/V1.4.0/APKEditor-1.4.0.jar -O APKEditor.jar
-
-          # 4. Signer (Uber APK Signer)
-          wget https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
-          
-          # 5. Zip utility
-          sudo apt-get update && sudo apt-get install -y zip
-
-      - name: Download App
-        run: |
-          echo "Downloading..."
-          wget "${{ inputs.apk_url }}" -O input_file
-          
-          if unzip -t input_file > /dev/null 2>&1; then
-            echo "FILE_TYPE=XAPK" >> $GITHUB_ENV
-            mv input_file raw.xapk
-          else
-            mv input_file raw.apk
-            echo "FILE_TYPE=APK" >> $GITHUB_ENV
-          fi
-
-      - name: Merge XAPK (Clean Merge)
-        if: env.FILE_TYPE == 'XAPK'
-        run: |
-          echo "Merging..."
-          unzip raw.xapk -d extracted_xapk
-          java -jar APKEditor.jar m -i extracted_xapk -o original.apk
-
-      - name: Prepare APK
-        if: env.FILE_TYPE == 'APK'
-        run: mv raw.apk original.apk
-
-      - name: Execute LSPatch (Inject Module)
-        run: |
-          echo "Patching..."
-          mkdir -p output
-          
-          # Gunakan module TrustMeAlready
-          # -f: Force overwrite
-          java -jar lspatch.jar original.apk -m module.apk -f -o output
-          
-          # Cari file hasil patch (nama file output lspatch kadang berubah-ubah)
-          find output -name "*.apk" -exec mv {} lspatched.apk \;
-
-      - name: FINAL FIX (Clean & Re-Sign)
-        run: |
-          echo "Stripping old signature..."
-          # Hapus folder META-INF sepenuhnya agar signer dipaksa bekerja dari nol
-          # Ini memperbaiki masalah "already signed SKIP"
-          zip -d lspatched.apk META-INF/\*
-          
-          echo "Signing with Debug Key..."
-          # --overwrite: Timpa file lama
-          # --allowResign: Izinkan sign ulang
-          java -jar signer.jar --apks lspatched.apk --allowResign --overwrite --out .
-          
-          # Rename hasil akhir
-          mv lspatched-aligned-debugSigned.apk MyXL-Mod-Final.apk
-
-      - name: Upload Result
-        uses: actions/upload-artifact@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          name: MyXL-Mod-Final
-          path: MyXL-Mod-Final.apk
+          python-version: '3.9'
+
+      - name: Install JADX
+        run: |
+          wget https://github.com/skylot/jadx/releases/download/v1.4.7/jadx-1.4.7.zip
+          unzip jadx-1.4.7.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+      - name: Download APK
+        if: ${{ inputs.apk_url != '' }}
+        run: |
+          echo "Downloading from ${{ inputs.apk_url }}..."
+          wget -O target.apk "${{ inputs.apk_url }}"
+
+      - name: Decompile APK (Ini memakan waktu...)
+        run: |
+          # Decompile resources (-r) dan sources (-s) ke folder 'out'
+          ./jadx/bin/jadx -d out -r -s --no-debug-info target.apk
+
+      - name: Run Hunter Script
+        run: |
+          # Jalankan script python pencari key
+          python hunt.py

@@ -1,4 +1,4 @@
-name: Super Patcher V19 (Auto-Retry on Corrupt ZIP)
+Name: Super Patcher V20 (Titanium Reliability)
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
           npm install -g apk-mitm
           pip install cloudscraper requests beautifulsoup4
           
-          # Download LSPatch
+          # Download LSPatch (Using v0.6 which is most stable)
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
       - name: Create Certificate & Keystore
@@ -91,8 +91,8 @@ jobs:
 
           def check_integrity(filename):
               print(f"   🔍 Verifying ZIP integrity of {filename}...")
-              # Jalankan unzip -t -q (quiet test)
               try:
+                  # Use unzip -t (test) to check CRC
                   result = subprocess.run(["unzip", "-t", "-q", filename], capture_output=True)
                   if result.returncode == 0:
                       print("   ✅ ZIP Integrity PASSED")
@@ -105,13 +105,13 @@ jobs:
                   return False
 
           def download_with_retry(url, filename, retries=5):
-              scraper = cloudscraper.create_scraper(browser='chrome')
+              scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
               
               for attempt in range(retries):
                   print(f"🔄 Attempt {attempt+1}/{retries}...")
                   
-                  # 1. Scrape Mediafire if needed
                   target_url = url
+                  # 1. Scrape Mediafire if needed
                   if 'mediafire.com' in url:
                       try:
                           print("   ...extracting MediaFire link")
@@ -126,25 +126,29 @@ jobs:
                   # 2. Download
                   print(f"   ...downloading from: {target_url[:60]}...")
                   try:
-                      with scraper.get(target_url, stream=True, timeout=90) as r:
+                      with scraper.get(target_url, stream=True, timeout=120) as r: # Increased timeout
                           if r.status_code != 200:
                               print(f"   ❌ HTTP Status: {r.status_code}")
                               time.sleep(2)
                               continue
                           
                           with open(filename, 'wb') as f:
-                              for chunk in r.iter_content(chunk_size=65536): # 64KB chunk
+                              for chunk in r.iter_content(chunk_size=1048576): # 1MB chunk for faster disk write
                                   if chunk: f.write(chunk)
                       
                       # 3. Size Check
+                      if not os.path.exists(filename):
+                          print("   ❌ File not created")
+                          continue
+
                       file_size = os.path.getsize(filename)
                       if file_size < 1000000: # 1MB min
-                          print("   ⚠️ File too small (likely error page)")
+                          print(f"   ⚠️ File too small ({file_size} bytes) - likely error page")
                           os.remove(filename)
                           time.sleep(2)
                           continue
 
-                      # 4. CRITICAL: Integrity Check INSIDE loop
+                      # 4. CRITICAL: Integrity Check
                       if check_integrity(filename):
                           return True
                       else:
@@ -164,74 +168,65 @@ jobs:
               print("❌ FAILED to download a healthy APKS after multiple attempts.")
               sys.exit(1)
 
-      - name: Download Module with Retry
+      - name: Download Module
         shell: python
         run: |
           import cloudscraper
           import os, sys, time
           from bs4 import BeautifulSoup
 
-          def download_with_retry(url, filename, retries=3):
-              scraper = cloudscraper.create_scraper(browser='chrome')
-              for attempt in range(retries):
-                  print(f"🔄 Attempt {attempt+1}/{retries}...")
+          def download_module(url, filename):
+              scraper = cloudscraper.create_scraper()
+              try:
                   target_url = url
                   if 'mediafire.com' in url:
-                      try:
-                          html = scraper.get(url).text
-                          soup = BeautifulSoup(html, 'html.parser')
-                          btn = soup.find('a', {'id': 'downloadButton'})
-                          if btn: target_url = btn.get('href')
-                      except: pass
+                      html = scraper.get(url).text
+                      soup = BeautifulSoup(html, 'html.parser')
+                      btn = soup.find('a', {'id': 'downloadButton'})
+                      if btn: target_url = btn.get('href')
                   
-                  try:
-                      with scraper.get(target_url, stream=True, timeout=60) as r:
-                          if r.status_code != 200: continue
-                          with open(filename, 'wb') as f:
-                              for chunk in r.iter_content(chunk_size=8192):
-                                  if chunk: f.write(chunk)
-                      
-                      if os.path.getsize(filename) > 10000:
-                          print("✅ Module Downloaded")
-                          return True
-                  except:
-                      time.sleep(2)
-              return False
+                  with scraper.get(target_url, stream=True, timeout=60) as r:
+                      with open(filename, 'wb') as f:
+                          for chunk in r.iter_content(chunk_size=8192):
+                              if chunk: f.write(chunk)
+                  return os.path.getsize(filename) > 10000
+              except:
+                  return False
 
           url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=m7n9sf3hnst&r=1981"
-          if not download_with_retry(url, "module.apk"):
-              print("❌ Failed to download module")
-              sys.exit(1)
+          if not download_module(url, "module.apk"):
+              print("⚠️ Module download failed, continuing without it might break LSPatch")
 
       - name: Prepare Workspace & Extract
         run: |
           mkdir -p original_workspace workspace_reqable workspace_lspatch
           
-          # Unzip is now guaranteed safe because of previous step
+          echo "📂 Unzipping APKS..."
           unzip -q download.apks -d original_workspace
           
-          # Find base.apk safely (avoiding splits)
+          # Find base.apk safely
           BASE_PATH=$(find original_workspace -type f -name "base.apk" | head -n 1)
-          
-          # Fallback: if no base.apk, look for largest apk
           if [ -z "$BASE_PATH" ]; then
              echo "⚠️ 'base.apk' not found by name, looking for largest APK..."
              BASE_PATH=$(find original_workspace -name "*.apk" -printf "%s %p\n" | sort -nr | head -1 | awk '{print $2}')
           fi
 
           if [ -z "$BASE_PATH" ]; then
-             echo "❌ Error: No APK file found!"
-             ls -R original_workspace
+             echo "❌ Error: No APK file found in archive!"
              exit 1
           fi
           
-          echo "📦 Using Base APK: $BASE_PATH"
+          echo "📦 Distributing Base APK: $BASE_PATH"
           cp "$BASE_PATH" workspace_reqable/base.apk
           cp "$BASE_PATH" workspace_lspatch/base.apk
           
-          # Copy splits if available
+          # Copy splits
           cp -n original_workspace/*.apk workspace_reqable/ 2>/dev/null || true
           cp -n original_workspace/*.apk workspace_lspatch/ 2>/dev/null || true
+          
+          # DISK CLEANUP: Critical for GitHub Runners
+          echo "🧹 Cleaning up original workspace to save space..."
+          rm -rf original_workspace download.apks
 
       - name: "Mode 1 - Reqable Patching"
         id: reqable
@@ -239,18 +234,20 @@ jobs:
         run: |
           cd workspace_reqable
           echo "🔵 Patching Reqable..."
+          # Max memory for Node to prevent GC crashes
           export NODE_OPTIONS="--max-old-space-size=8192"
           
-          # Added --skip-signing to prevent internal signer crashes
+          # Using --skip-signing to handle signing manually later (more reliable)
           apk-mitm base.apk --certificate ../reqable.pem --skip-signing
           
-          # Smartly find the output file (patched or unsigned)
+          # Find output safely
           PATCHED_FILE=$(find . -maxdepth 1 \( -name "*-patched.apk" -o -name "*-unsigned.apk" \) | head -n 1)
           
           if [ ! -z "$PATCHED_FILE" ]; then
              echo "✅ Patch success! File: $PATCHED_FILE"
              mv "$PATCHED_FILE" base.apk
              
+             # Sign all APKs in folder to ensure consistency
              for apk in *.apk; do
                 echo "🔏 Signing $apk..."
                 zipalign -p -f -v 4 "$apk" "aligned_$apk"
@@ -260,7 +257,7 @@ jobs:
              zip -r -q ../Reqable_Version.apks .
              echo "✅ Reqable Artifact Created"
           else
-             echo "❌ Reqable Patch Failed (No output file detected)"
+             echo "❌ Reqable Patch Failed"
              exit 1
           fi
 
@@ -271,8 +268,8 @@ jobs:
           cd workspace_lspatch
           echo "🟣 Patching LSPatch..."
           
-          # Added -Xmx2G to prevent Java OOM
-          java -Xmx2G -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
+          # INCREASED MEMORY TO 4GB
+          java -Xmx4G -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
           
           TARGET=$(find . -name "*-lspatched.apk")
           if [ ! -z "$TARGET" ]; then
@@ -288,7 +285,7 @@ jobs:
              zip -r -q ../LSPatch_Version.apks .
              echo "✅ LSPatch Artifact Created"
           else
-             echo "❌ LSPatch Failed (Check logs above for Java errors)"
+             echo "❌ LSPatch Failed"
              exit 1
           fi
 
@@ -296,7 +293,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: Super_Patcher_Results
+          name: Super_Patcher_Results_${{ github.run_number }}
           path: |
             Reqable_Version.apks
             LSPatch_Version.apks

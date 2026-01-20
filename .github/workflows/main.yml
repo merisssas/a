@@ -36,7 +36,8 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y zipalign apksigner zip unzip
+          # Kita butuh tools standar Android SDK
+          sudo apt-get install -y aapt zipalign apksigner zip unzip
           
           # 1. Install APK-MITM
           npm install -g apk-mitm
@@ -44,8 +45,7 @@ jobs:
           # 2. Download LSPatch
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
           
-          # 3. Download Uber APK Signer
-          wget "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar" -O signer.jar
+          # (Uber Signer kita ganti pakai apksigner bawaan linux biar lebih stabil)
           
           pip install cloudscraper requests beautifulsoup4
 
@@ -84,6 +84,15 @@ jobs:
           -----END CERTIFICATE-----
           EOF
 
+      - name: Generate Consistent Keystore
+        run: |
+          echo "🔐 Membuat Keystore Debug..."
+          # Kita buat keystore sendiri agar bisa dipakai berulang untuk semua split
+          keytool -genkey -v -keystore debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
       - name: Download File
         shell: python
         env:
@@ -98,13 +107,9 @@ jobs:
 
           url = os.environ['APK_URL']
           scraper = cloudscraper.create_scraper(browser='chrome')
-
-          # Default name
           filename = "download.apks" 
 
           print(f"🔗 URL: {url}")
-          
-          # Scrape Mediafire Logic
           need_scrape = False
           if 'mediafire.com' in url:
               if 'download' in urlparse(url).netloc: need_scrape = False
@@ -147,85 +152,71 @@ jobs:
           echo "📦 Membongkar APKS/XAPK..."
           unzip -q download.apks -d workspace
           
-          echo "🔍 Menganalisis Isi..."
-          ls -R workspace
-          
+          echo "🔍 Cek kelengkapan..."
           if [ ! -f "workspace/base.apk" ]; then
-             echo "❌ Error: Tidak ditemukan 'base.apk' di dalam bundle."
-             echo "Pastikan link yang dimasukkan adalah XAPK atau APKS."
+             echo "❌ Error: Tidak ditemukan 'base.apk'. Pastikan link benar."
              exit 1
           fi
 
-          # Cek kompabilitas 32-bit untuk Realme
-          if ls workspace/config.armeabi_v7a.apk 1> /dev/null 2>&1 || ls workspace/split_config.armeabi_v7a.apk 1> /dev/null 2>&1; then
-             echo "✅ Berita Bagus: Bundle ini punya library 32-bit (armeabi-v7a)!"
-             echo "✅ Harusnya kompatibel dengan Realme Note 50 kamu."
+          # Cek kompabilitas
+          if ls workspace/*armeabi_v7a* 1> /dev/null 2>&1; then
+             echo "✅ Ditemukan library 32-bit (armeabi-v7a). Kompatibel!"
           else
-             echo "⚠️ PERINGATAN: Bundle ini sepertinya hanya 64-bit."
-             echo "⚠️ Jika HP kamu 32-bit, instalasi mungkin masih akan gagal."
+             echo "⚠️ Hanya ditemukan 64-bit. Resiko tidak kompatibel di HP 32-bit."
           fi
 
-      - name: Patching Base APK (Network & Module)
+      - name: Patching Base APK Only
         run: |
           cd workspace
           
-          echo "🛡️ Tahap 1: Patching Network (Reqable) pada base.apk..."
+          echo "🛡️ Patching Network (Reqable) pada base.apk..."
           apk-mitm base.apk --certificate ../reqable.pem
           
-          # apk-mitm outputnya: base-patched.apk
           if [ ! -f "base-patched.apk" ]; then
              echo "❌ Gagal patch network!"
              exit 1
           fi
           
-          echo "💉 Tahap 2: Inject LSPatch pada base-patched.apk..."
+          echo "💉 Inject LSPatch pada base.apk..."
           java -jar ../lspatch.jar base-patched.apk -m ../module.apk -f -l 2
           
-          # LSPatch output: base-patched-lspatched.apk
           TARGET=$(find . -maxdepth 1 -name "*-lspatched.apk")
-          
           if [ -z "$TARGET" ]; then
              echo "❌ Gagal inject LSPatch!"
              exit 1
           fi
           
-          echo "🔄 Mengganti base.apk asli dengan hasil patch..."
+          echo "🔄 Mengganti base.apk asli dengan versi patched..."
           mv "$TARGET" base.apk
-          
-          # Hapus file sisa patch
-          rm base-patched.apk
+          rm base-patched.apk # Hapus temp
           
           cd ..
 
-      - name: Cleaning & Re-Signing ALL Splits
+      - name: Process ALL Splits (Align & Sign)
         run: |
-          echo "🧹 Membersihkan signature lama dari SEMUA file APK di bundle..."
-          # Kita harus menghapus META-INF dari semua apk (base, config, split, dll)
-          # Agar nanti bisa ditandatangani ulang secara seragam.
-          
-          find workspace -name "*.apk" -print0 | xargs -0 -I {} zip -d {} "META-INF/*" || true
-          
-          echo "✍️ Menandatangani SEMUA APK dalam bundle..."
-          # Uber APK Signer bisa sign satu folder sekaligus.
-          # Ini penting! Semua split harus punya signature yang SAMA persis.
-          java -jar signer.jar -d workspace --overwrite
-          
-          # Hapus file yang belum di-sign (karena --overwrite kadang membuat file baru jika nama beda)
-          # Namun flag --overwrite di uber-signer v1.3.0 biasanya menimpa jika dikonfigurasi benar,
-          # Tapi defaultnya dia bikin *-debugSigned.apk. Kita perlu rename balik.
+          echo "🔄 Memproses ulang SEMUA file APK (Cleaning, Aligning, Signing)..."
           
           cd workspace
-          for f in *-debugSigned.apk; do
-              # Jika ada file hasil sign
-              if [ -f "$f" ]; then
-                  original_name="${f%-debugSigned.apk}.apk" # Hapus suffix
-                  original_name="${original_name%-aligned}.apk" # Jaga-jaga ada aligned
-                  mv "$f" "$original_name"
-              fi
+          
+          # Loop semua file .apk (base.apk, config.armeabi_v7a.apk, split_config.xx.apk, dll)
+          # Ini memastikan TIDAK ADA file yang terlewat
+          for apk in *.apk; do
+             echo "🚀 Processing: $apk"
+             
+             # 1. Hapus Signature Lama (Penting! Agar tidak bentrok)
+             zip -d "$apk" "META-INF/*" 2>/dev/null || true
+             
+             # 2. Zipalign (Wajib sebelum sign)
+             # -p: page align .so files, -f: overwrite, -v: verbose
+             zipalign -p -f -v 4 "$apk" "aligned_$apk"
+             
+             # Timpa file asli dengan yang sudah aligned
+             mv "aligned_$apk" "$apk"
+             
+             # 3. Sign dengan apksigner menggunakan kunci yang SAMA untuk semua
+             apksigner sign --ks ../debug.keystore --ks-pass pass:android --key-pass pass:android "$apk"
           done
           
-          # Hapus sisa-sisa file unsigned jika masih ada (optional, tapi zip akan ambil semua)
-          rm -f *-aligned.apk
           cd ..
 
       - name: Repackaging to APKS
@@ -235,7 +226,7 @@ jobs:
           zip -r -q ../Patched_App.apks .
           cd ..
           
-          echo "✅ Selesai! File siap diupload."
+          echo "✅ Selesai! Gunakan SAI / MT Manager untuk install."
 
       - name: Upload Hasil (APKS)
         uses: actions/upload-artifact@v4

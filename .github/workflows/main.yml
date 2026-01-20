@@ -1,4 +1,4 @@
-name: Super Patcher V14 (Split APKS Preservation Mode)
+name: Super Patcher V15 (Twin Mode: Reqable & LSPatch Separate)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
         default: 'https://www.mediafire.com/file/lxciw8l36u045wn/Mnet+Plus_3.38.0.apk/file'
 
 jobs:
-  split-patch-mode:
+  twin-patch-mode:
     runs-on: ubuntu-latest
     
     steps:
@@ -36,7 +36,6 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          # Kita butuh tools standar Android SDK
           sudo apt-get install -y aapt zipalign apksigner zip unzip
           
           # 1. Install APK-MITM
@@ -45,12 +44,11 @@ jobs:
           # 2. Download LSPatch
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
           
-          # (Uber Signer kita ganti pakai apksigner bawaan linux biar lebih stabil)
-          
           pip install cloudscraper requests beautifulsoup4
 
-      - name: Create Certificate (Reqable)
+      - name: Create Certificate & Keystore
         run: |
+          # 1. Buat Sertifikat Reqable
           cat <<EOF > reqable.pem
           -----BEGIN CERTIFICATE-----
           MIIFETCCA/mgAwIBAgIUOkl2iSzmLNvVqAPLtLk5WxAWItAwDQYJKoZIhvcNAQEL
@@ -83,11 +81,9 @@ jobs:
           Ff6Xjn0=
           -----END CERTIFICATE-----
           EOF
-
-      - name: Generate Consistent Keystore
-        run: |
-          echo "🔐 Membuat Keystore Debug..."
-          # Kita buat keystore sendiri agar bisa dipakai berulang untuk semua split
+          
+          # 2. Buat Keystore Debug Konsisten
+          echo "🔐 Membuat Keystore..."
           keytool -genkey -v -keystore debug.keystore \
             -storepass android -alias androiddebugkey -keypass android \
             -keyalg RSA -keysize 2048 -validity 10000 \
@@ -147,89 +143,82 @@ jobs:
         run: |
           wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=1dxu0ul7601&r=1660" -O module.apk
 
-      - name: Extract & Analyze Bundle
+      - name: Extract & Prepare Workspaces
         run: |
           echo "📦 Membongkar APKS/XAPK..."
-          unzip -q download.apks -d workspace
+          unzip -q download.apks -d original_workspace
           
-          echo "🔍 Cek kelengkapan..."
-          if [ ! -f "workspace/base.apk" ]; then
-             echo "❌ Error: Tidak ditemukan 'base.apk'. Pastikan link benar."
+          # Cek kelengkapan
+          if [ ! -f "original_workspace/base.apk" ]; then
+             echo "❌ Error: Tidak ditemukan 'base.apk'."
              exit 1
           fi
+          
+          echo "📂 Membuat 2 Ruang Kerja Terpisah..."
+          cp -r original_workspace workspace_reqable
+          cp -r original_workspace workspace_lspatch
 
-          # Cek kompabilitas
-          if ls workspace/*armeabi_v7a* 1> /dev/null 2>&1; then
-             echo "✅ Ditemukan library 32-bit (armeabi-v7a). Kompatibel!"
-          else
-             echo "⚠️ Hanya ditemukan 64-bit. Resiko tidak kompatibel di HP 32-bit."
-          fi
-
-      - name: Patching Base APK Only
+      # ==========================================
+      # VERSI 1: REQABLE ONLY (Network Patch)
+      # ==========================================
+      - name: [Versi 1] Create Reqable Only Version
         run: |
-          cd workspace
+          echo "🔵 Memulai Proses Versi Reqable..."
+          cd workspace_reqable
           
-          echo "🛡️ Patching Network (Reqable) pada base.apk..."
+          # Patch Network
           apk-mitm base.apk --certificate ../reqable.pem
+          mv base-patched.apk base.apk
           
-          if [ ! -f "base-patched.apk" ]; then
-             echo "❌ Gagal patch network!"
-             exit 1
-          fi
+          # Loop Cleaning & Signing
+          echo "✍️ Signing Versi Reqable..."
+          for apk in *.apk; do
+             zip -d "$apk" "META-INF/*" 2>/dev/null || true
+             zipalign -p -f -v 4 "$apk" "aligned_$apk"
+             mv "aligned_$apk" "$apk"
+             apksigner sign --ks ../debug.keystore --ks-pass pass:android --key-pass pass:android "$apk"
+          done
           
-          echo "💉 Inject LSPatch pada base.apk..."
-          java -jar ../lspatch.jar base-patched.apk -m ../module.apk -f -l 2
+          # Pack
+          zip -r -q ../Reqable_Version.apks .
+          cd ..
+
+      # ==========================================
+      # VERSI 2: LSPATCH ONLY (Module/Faker)
+      # ==========================================
+      - name: [Versi 2] Create LSPatch Only Version
+        run: |
+          echo "🟣 Memulai Proses Versi LSPatch..."
+          cd workspace_lspatch
           
+          # Patch Module
+          java -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
+          
+          # Rename output lspatch ke base.apk
           TARGET=$(find . -maxdepth 1 -name "*-lspatched.apk")
           if [ -z "$TARGET" ]; then
              echo "❌ Gagal inject LSPatch!"
              exit 1
           fi
-          
-          echo "🔄 Mengganti base.apk asli dengan versi patched..."
           mv "$TARGET" base.apk
-          rm base-patched.apk # Hapus temp
           
-          cd ..
-
-      - name: Process ALL Splits (Align & Sign)
-        run: |
-          echo "🔄 Memproses ulang SEMUA file APK (Cleaning, Aligning, Signing)..."
-          
-          cd workspace
-          
-          # Loop semua file .apk (base.apk, config.armeabi_v7a.apk, split_config.xx.apk, dll)
-          # Ini memastikan TIDAK ADA file yang terlewat
+          # Loop Cleaning & Signing
+          echo "✍️ Signing Versi LSPatch..."
           for apk in *.apk; do
-             echo "🚀 Processing: $apk"
-             
-             # 1. Hapus Signature Lama (Penting! Agar tidak bentrok)
              zip -d "$apk" "META-INF/*" 2>/dev/null || true
-             
-             # 2. Zipalign (Wajib sebelum sign)
-             # -p: page align .so files, -f: overwrite, -v: verbose
              zipalign -p -f -v 4 "$apk" "aligned_$apk"
-             
-             # Timpa file asli dengan yang sudah aligned
              mv "aligned_$apk" "$apk"
-             
-             # 3. Sign dengan apksigner menggunakan kunci yang SAMA untuk semua
              apksigner sign --ks ../debug.keystore --ks-pass pass:android --key-pass pass:android "$apk"
           done
           
+          # Pack
+          zip -r -q ../LSPatch_Version.apks .
           cd ..
 
-      - name: Repackaging to APKS
-        run: |
-          echo "📦 Membungkus ulang menjadi .APKS..."
-          cd workspace
-          zip -r -q ../Patched_App.apks .
-          cd ..
-          
-          echo "✅ Selesai! Gunakan SAI / MT Manager untuk install."
-
-      - name: Upload Hasil (APKS)
+      - name: Upload Kedua Versi
         uses: actions/upload-artifact@v4
         with:
-          name: Patched_App_For_SAI
-          path: Patched_App.apks
+          name: Twin_Versions_Pack
+          path: |
+            Reqable_Version.apks
+            LSPatch_Version.apks

@@ -36,7 +36,7 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          # Menambahkan 'zipalign' dan 'apksigner' ke instalasi
+          # Menambahkan 'zip' dan 'unzip' yang krusial untuk metode repack
           sudo apt-get install -y aapt zipalign apksigner zip unzip
           
           # 1. Install APK-MITM (Patcher Network)
@@ -215,24 +215,33 @@ jobs:
           fi
           mv "$OUTPUT_LSPATCH" unsigned_final.apk
 
-      - name: Tahap 3 - Final Signing (Android 15 Fix)
+      - name: Tahap 3 - Final Signing (Repack Fix)
         run: |
-          # [STRATEGI BARU: Zipalign First]
-          # Menggunakan zipalign untuk memperbaiki struktur file ZIP/APK yang korup
-          # Ini akan menyusun ulang header sehingga zip -d bisa bekerja tanpa error.
+          # [STRATEGI BARU: REPACKING TOTAL]
+          # Karena file APK hasil LSPatch memiliki header CRC yang rusak (Verification FAILED),
+          # kita harus membongkar isinya dan membungkus ulang untuk memperbaiki strukturnya.
           
-          echo "🔧 Memperbaiki struktur APK dengan Zipalign..."
-          zipalign -p -f -v 4 unsigned_final.apk fixed_structure.apk
+          echo "🔧 Memulai Repacking untuk memperbaiki CRC..."
           
-          # [UNSIGN]
-          # Menghapus META-INF dari file yang sudah distabilkan strukturnya
-          echo "🗑️ Menghapus signature lama..."
-          zip -d fixed_structure.apk "META-INF/*"
+          # 1. Buat folder temp
+          mkdir -p repack_temp
           
-          # [SIGN]
-          # Sign ulang dengan Uber APK Signer
-          # Input: fixed_structure.apk (unsigned)
-          echo "✍️ Signing ulang..."
+          # 2. Extract APK (gunakan unzip). -o = overwrite, -q = quiet
+          # Gunakan '|| true' agar script tidak mati jika ada warning CRC saat unzip
+          unzip -q -o unsigned_final.apk -d repack_temp || echo "⚠️ Warning: Unzip menemukan error CRC, mencoba melanjutkan..."
+          
+          # 3. Hapus Signature lama yang bikin error
+          rm -rf repack_temp/META-INF
+          
+          # 4. Bungkus ulang (Zip) menjadi APK baru
+          # Ini akan membuat file baru dengan CRC yang valid
+          cd repack_temp
+          zip -r -q ../fixed_structure.apk .
+          cd ..
+          
+          # 5. Sign ulang dengan Uber APK Signer
+          # Signer ini otomatis melakukan 'zipalign' juga.
+          echo "✍️ Signing ulang APK yang sudah di-repack..."
           java -jar signer.jar --apks fixed_structure.apk
           
           # Uber signer akan menghasilkan file dengan akhiran -aligned-debugSigned.apk

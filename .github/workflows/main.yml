@@ -169,7 +169,6 @@ jobs:
              if [ -f "raw_download.xapk" ]; then mv raw_download.xapk raw_download.apks; fi
              
              # Gunakan APKEditor untuk merge
-             # Command: m (merge) -i (input) -o (output)
              java -jar APKEditor.jar m -i raw_download.apks -o target.apk
              
              echo "✅ Berhasil Merge! Sekarang sudah jadi Single APK."
@@ -188,7 +187,6 @@ jobs:
             echo "================================================================"
             echo "⚠️  BAHAYA: File hasil merge ini HANYA 64-BIT (arm64-v8a)!"
             echo "⚠️  Realme Note 50 (OS 32-bit) TIDAK BISA menginstall ini."
-            echo "⚠️  Jika instalasi gagal, cari file 'Universal' atau 'armeabi-v7a'."
             echo "================================================================"
           else
             echo "✅ Aman: Library 32-bit (armeabi-v7a) terdeteksi atau Java-only."
@@ -196,7 +194,7 @@ jobs:
 
       - name: Tahap 1 - Patch Network (Reqable)
         run: |
-          # Sekarang inputnya pasti 'target.apk' (Single APK)
+          # Sekarang inputnya pasti 'target.apk'
           apk-mitm target.apk --certificate reqable.pem
           
           # Hasilnya pasti 'target-patched.apk'
@@ -218,9 +216,17 @@ jobs:
 
       - name: Tahap 3 - Final Signing (Android 15 Fix)
         run: |
-          java -jar signer.jar --apks unsigned_final.apk
+          # PERBAIKAN: Menambahkan --overwrite agar signer mau menimpa signature lama
+          java -jar signer.jar --apks unsigned_final.apk --overwrite
           
           FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
+          
+          if [ -z "$FINAL_APK" ]; then
+             echo "❌ Gagal Signing! File output tidak ditemukan."
+             ls -la # Debugging: lihat file apa yang ada
+             exit 1
+          fi
+          
           mv "$FINAL_APK" "Final_App_Ready.apk"
 
       - name: Upload Hasil Akhir

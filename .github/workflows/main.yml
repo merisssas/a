@@ -1,4 +1,4 @@
-name: Super Patcher V16 (Robust Mode)
+name: Super Patcher V17 (Integrity Check)
 
 on:
   workflow_dispatch:
@@ -111,6 +111,14 @@ jobs:
                   with open(filename, 'wb') as f:
                       for chunk in r.iter_content(chunk_size=1024*1024): 
                           if chunk: f.write(chunk)
+              
+              # INTEGRITY CHECK
+              size = os.path.getsize(filename)
+              print(f"📦 File Size: {size / 1024 / 1024:.2f} MB")
+              if size < 1000000: # Less than 1MB
+                  print("❌ Error: File too small! Likely an error page or corrupted download.")
+                  sys.exit(1)
+                  
           except Exception as e:
               print(f"❌ Error: {e}")
               sys.exit(1)
@@ -119,7 +127,7 @@ jobs:
         shell: python
         run: |
           import cloudscraper
-          import sys
+          import sys, os
           from bs4 import BeautifulSoup
 
           url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=5tgobredp9d&r=1430"
@@ -139,13 +147,18 @@ jobs:
           print(f"⬇️ Downloading Module...")
           try:
               with scraper.get(url, stream=True, timeout=120) as r:
-                  if r.status_code != 200: 
-                      print(f"❌ Failed status: {r.status_code}")
-                      sys.exit(1)
+                  if r.status_code != 200: sys.exit(1)
                   with open(filename, 'wb') as f:
                       for chunk in r.iter_content(chunk_size=1024*1024): 
                           if chunk: f.write(chunk)
-              print("✅ Module Downloaded Successfully")
+              
+              # INTEGRITY CHECK
+              size = os.path.getsize(filename)
+              print(f"📦 Module Size: {size / 1024 / 1024:.2f} MB")
+              if size < 10000: # Less than 10KB
+                 print("❌ Error: Module file invalid/corrupt.")
+                 sys.exit(1)
+
           except Exception as e:
               print(f"❌ Error downloading module: {e}")
               sys.exit(1)
@@ -159,15 +172,19 @@ jobs:
              exit 1
           fi
 
-          if unzip -t download.apks >/dev/null 2>&1; then
-              echo "📦 File is Archive (XAPK/APKS)"
+          # Removed >/dev/null to SEE the errors if verification fails
+          echo "🔍 Verifying Archive Integrity..."
+          if unzip -t download.apks; then
+              echo "📦 File is Valid Archive (XAPK/APKS)"
               unzip -q download.apks -d original_workspace
           else
-              echo "📦 File is Single APK"
+              echo "⚠️ Archive Check Failed or Not an Archive."
+              # Try treating as single APK, but if unzip -t failed with 'verification failed', it is corrupt.
+              # We will try to proceed but warn.
               mv download.apks original_workspace/base.apk
           fi
           
-          # Find base.apk recursively if not at root
+          # Find base.apk recursively
           BASE_PATH=$(find original_workspace -name "base.apk" -o -name "*.apk" | head -n 1)
           if [ -z "$BASE_PATH" ]; then
              echo "❌ Error: No APK file found in extracted contents!"
@@ -175,12 +192,11 @@ jobs:
              exit 1
           fi
           
-          # Ensure base.apk is in the root of the workspace folders
           echo "📦 Found Base APK at: $BASE_PATH"
           cp "$BASE_PATH" workspace_reqable/base.apk
           cp "$BASE_PATH" workspace_lspatch/base.apk
           
-          # Copy other splits if they exist (for APKS support)
+          # Copy splits if available
           cp -n original_workspace/*.apk workspace_reqable/ 2>/dev/null || true
           cp -n original_workspace/*.apk workspace_lspatch/ 2>/dev/null || true
 
@@ -190,16 +206,17 @@ jobs:
         run: |
           cd workspace_reqable
           echo "🔵 Patching Reqable..."
-          
-          # Force Node to use more memory
           export NODE_OPTIONS="--max-old-space-size=8192"
           
-          # NOTE: Added --skip-signing to prevent crashes. We sign manually below.
+          # Added --skip-signing to prevent internal signer crashes
           apk-mitm base.apk --certificate ../reqable.pem --skip-signing
           
-          if [ -f "base-patched.apk" ]; then
-             echo "✅ Patch success! Renaming and Signing..."
-             mv base-patched.apk base.apk
+          # Smartly find the output file (patched or unsigned)
+          PATCHED_FILE=$(find . -maxdepth 1 \( -name "*-patched.apk" -o -name "*-unsigned.apk" \) | head -n 1)
+          
+          if [ ! -z "$PATCHED_FILE" ]; then
+             echo "✅ Patch success! File: $PATCHED_FILE"
+             mv "$PATCHED_FILE" base.apk
              
              for apk in *.apk; do
                 echo "🔏 Signing $apk..."
@@ -210,8 +227,7 @@ jobs:
              zip -r -q ../Reqable_Version.apks .
              echo "✅ Reqable Artifact Created"
           else
-             echo "❌ Reqable Patch Failed (Output file not found)"
-             ls -la
+             echo "❌ Reqable Patch Failed (No output file detected)"
              exit 1
           fi
 
@@ -227,12 +243,10 @@ jobs:
              exit 1
           fi
 
-          # Attempt patch
-          java -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
+          # Added -Xmx2G to prevent Java OOM
+          java -Xmx2G -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
           
-          # Find output (LSPatch naming can vary)
           TARGET=$(find . -name "*-lspatched.apk")
-          
           if [ ! -z "$TARGET" ]; then
              echo "✅ Patch success! Found: $TARGET"
              mv "$TARGET" base.apk
@@ -246,8 +260,7 @@ jobs:
              zip -r -q ../LSPatch_Version.apks .
              echo "✅ LSPatch Artifact Created"
           else
-             echo "❌ LSPatch Failed (Output file not found)"
-             ls -la
+             echo "❌ LSPatch Failed (Check logs above for Java errors)"
              exit 1
           fi
 

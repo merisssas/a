@@ -36,7 +36,8 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y aapt zip unzip
+          # Menambahkan 'zipalign' dan 'apksigner' ke instalasi
+          sudo apt-get install -y aapt zipalign apksigner zip unzip
           
           # 1. Install APK-MITM (Patcher Network)
           npm install -g apk-mitm
@@ -216,22 +217,25 @@ jobs:
 
       - name: Tahap 3 - Final Signing (Android 15 Fix)
         run: |
-          # [FIX ZIP STRUCTURE]
-          # Menggunakan zip -FF untuk memperbaiki header ZIP yang rusak akibat LSPatch/zipalign
-          # Ini mencegah error "Local Entry Flag does not match CD"
-          echo "🔧 Memperbaiki struktur ZIP sebelum unsigning..."
-          zip -FF unsigned_final.apk --out clean_structure.apk
+          # [STRATEGI BARU: Zipalign First]
+          # Menggunakan zipalign untuk memperbaiki struktur file ZIP/APK yang korup
+          # Ini akan menyusun ulang header sehingga zip -d bisa bekerja tanpa error.
+          
+          echo "🔧 Memperbaiki struktur APK dengan Zipalign..."
+          zipalign -p -f -v 4 unsigned_final.apk fixed_structure.apk
           
           # [UNSIGN]
-          # Sekarang aman untuk menghapus META-INF dari file yang sudah dibersihkan
+          # Menghapus META-INF dari file yang sudah distabilkan strukturnya
           echo "🗑️ Menghapus signature lama..."
-          zip -d clean_structure.apk "META-INF/*"
+          zip -d fixed_structure.apk "META-INF/*"
           
           # [SIGN]
           # Sign ulang dengan Uber APK Signer
+          # Input: fixed_structure.apk (unsigned)
           echo "✍️ Signing ulang..."
-          java -jar signer.jar --apks clean_structure.apk
+          java -jar signer.jar --apks fixed_structure.apk
           
+          # Uber signer akan menghasilkan file dengan akhiran -aligned-debugSigned.apk
           FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
           
           if [ -z "$FINAL_APK" ]; then

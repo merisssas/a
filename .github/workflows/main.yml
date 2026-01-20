@@ -1,4 +1,4 @@
-Name: Super Patcher V15 (Twin Mode)
+name: Super Patcher V15 (Twin Mode)
 
 on:
   workflow_dispatch:

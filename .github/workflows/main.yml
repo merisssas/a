@@ -1,4 +1,4 @@
-name: Super Patcher V15 (Twin Mode)
+Name: Super Patcher V15 (Twin Mode)
 
 on:
   workflow_dispatch:
@@ -42,12 +42,11 @@ jobs:
           npm install -g apk-mitm
           pip install cloudscraper requests beautifulsoup4
           
-          # Download LSPatch
+          # Download LSPatch (Direct GitHub link works with wget)
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
       - name: Create Certificate & Keystore
         run: |
-          # Menggunakan printf agar lebih aman dari error indentasi
           printf "%s\n" "-----BEGIN CERTIFICATE-----
           MIIFETCCA/mgAwIBAgIUOkl2iSzmLNvVqAPLtLk5WxAWItAwDQYJKoZIhvcNAQEL
           BQAwgZUxCzAJBgNVBAYTAkNOMREwDwYDVQQIDAhTaGFuZ2hhaTERMA8GA1UEBwwI
@@ -79,7 +78,6 @@ jobs:
           Ff6Xjn0=
           -----END CERTIFICATE-----" > reqable.pem
           
-          # Membuat Keystore
           keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Download Target APK
@@ -90,14 +88,12 @@ jobs:
           import cloudscraper
           import os, sys
           from bs4 import BeautifulSoup
-          from urllib.parse import urlparse
 
           url = os.environ['APK_URL']
           scraper = cloudscraper.create_scraper(browser='chrome')
           filename = "download.apks" 
 
           print(f"🔗 Processing URL: {url}")
-          
           try:
               if 'mediafire.com' in url:
                   html = scraper.get(url).text
@@ -108,7 +104,40 @@ jobs:
           except Exception as e:
               print(f"⚠️ Warning scraping: {e}")
 
-          print(f"⬇️ Downloading...")
+          print(f"⬇️ Downloading Target...")
+          try:
+              with scraper.get(url, stream=True, timeout=120) as r:
+                  if r.status_code != 200: sys.exit(1)
+                  with open(filename, 'wb') as f:
+                      for chunk in r.iter_content(chunk_size=1024*1024): 
+                          if chunk: f.write(chunk)
+          except Exception as e:
+              print(f"❌ Error: {e}")
+              sys.exit(1)
+
+      # FIX: Use Python/Cloudscraper for Module too (Wget fails on Mediafire)
+      - name: Download Android Faker Module
+        shell: python
+        run: |
+          import cloudscraper
+          import sys
+          from bs4 import BeautifulSoup
+
+          url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file"
+          scraper = cloudscraper.create_scraper(browser='chrome')
+          filename = "module.apk"
+
+          print(f"🔗 Processing Module URL...")
+          try:
+              html = scraper.get(url).text
+              soup = BeautifulSoup(html, 'html.parser')
+              download_btn = soup.find('a', {'id': 'downloadButton'})
+              if download_btn:
+                  url = download_btn.get('href')
+          except Exception as e:
+              print(f"⚠️ Warning scraping module: {e}")
+
+          print(f"⬇️ Downloading Module...")
           try:
               with scraper.get(url, stream=True, timeout=120) as r:
                   if r.status_code != 200: 
@@ -117,28 +146,31 @@ jobs:
                   with open(filename, 'wb') as f:
                       for chunk in r.iter_content(chunk_size=1024*1024): 
                           if chunk: f.write(chunk)
+              print("✅ Module Downloaded Successfully")
           except Exception as e:
-              print(f"❌ Error: {e}")
+              print(f"❌ Error downloading module: {e}")
               sys.exit(1)
-
-      - name: Download Android Faker Module
-        run: |
-           wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file" -O module.apk || echo "⚠️ Download module gagal"
 
       - name: Prepare Workspace
         run: |
           mkdir -p original_workspace workspace_reqable workspace_lspatch
           
+          # Check if file exists and is not empty
+          if [ ! -s "download.apks" ]; then
+             echo "❌ Error: download.apks is missing or empty"
+             exit 1
+          fi
+
           if unzip -t download.apks >/dev/null 2>&1; then
-              echo "📦 File adalah Archive (XAPK/APKS)"
+              echo "📦 File is Archive (XAPK/APKS)"
               unzip -q download.apks -d original_workspace
           else
-              echo "📦 File adalah APK Single"
+              echo "📦 File is Single APK"
               mv download.apks original_workspace/base.apk
           fi
           
           if [ ! -f "original_workspace/base.apk" ]; then
-             echo "❌ Error: base.apk tidak ditemukan!"
+             echo "❌ Error: base.apk not found in extracted files!"
              ls -R original_workspace
              exit 1
           fi
@@ -147,10 +179,15 @@ jobs:
           cp -r original_workspace/* workspace_lspatch/
 
       - name: "Mode 1 - Reqable Patching"
+        id: reqable
         continue-on-error: true
         run: |
           cd workspace_reqable
           echo "🔵 Patching Reqable..."
+          
+          # Increased memory limit for node to prevent crash
+          export NODE_OPTIONS="--max-old-space-size=4096"
+          
           apk-mitm base.apk --certificate ../reqable.pem
           
           if [ -f "base-patched.apk" ]; then
@@ -161,15 +198,24 @@ jobs:
                 apksigner sign --ks ../debug.keystore --ks-pass pass:android "$apk"
              done
              zip -r -q ../Reqable_Version.apks .
+             echo "✅ Reqable Success"
           else
-             echo "❌ Reqable Patch Gagal"
+             echo "❌ Reqable Patch Failed (Check logs for apk-mitm error)"
+             exit 1
           fi
 
       - name: "Mode 2 - LSPatch Patching"
+        id: lspatch
         continue-on-error: true
         run: |
           cd workspace_lspatch
           echo "🟣 Patching LSPatch..."
+          
+          if [ ! -s "../module.apk" ]; then
+             echo "❌ Module APK is missing or invalid"
+             exit 1
+          fi
+
           java -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
           
           TARGET=$(find . -name "*-lspatched.apk")
@@ -181,12 +227,15 @@ jobs:
                 apksigner sign --ks ../debug.keystore --ks-pass pass:android "$apk"
              done
              zip -r -q ../LSPatch_Version.apks .
+             echo "✅ LSPatch Success"
           else
-             echo "❌ LSPatch Gagal"
+             echo "❌ LSPatch Failed"
+             exit 1
           fi
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Super_Patcher_Results
           path: |

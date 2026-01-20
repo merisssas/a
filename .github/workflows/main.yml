@@ -155,7 +155,7 @@ jobs:
 
       - name: Download Android Faker
         run: |
-          wget "https://github.com/Android1500/AndroidFaker/releases/download/1.2.0/AndroidFaker_1.2.0.apk" -O module.apk
+          wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=1dxu0ul7601&r=1660" -O module.apk
 
       # [LANGKAH BARU] Convert APKS -> APK
       - name: Convert APKS to APK (Merger)

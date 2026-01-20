@@ -122,7 +122,7 @@ jobs:
           import sys
           from bs4 import BeautifulSoup
 
-          url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file"
+          url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=5tgobredp9d&r=1430"
           scraper = cloudscraper.create_scraper(browser='chrome')
           filename = "module.apk"
 

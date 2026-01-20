@@ -1,4 +1,4 @@
-Name: Super Patcher V20 (Titanium Reliability)
+name: Super Patcher V20 (Titanium Reliability)
 
 on:
   workflow_dispatch:

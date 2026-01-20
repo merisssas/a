@@ -7,7 +7,7 @@ on:
         description: 'Link File (APKS / XAPK Only)'
         required: true
         type: string
-        default: 'https://www.mediafire.com/file/lxciw8l36u045wn/Mnet+Plus_3.38.0.apk/file'
+        default: 'https://www.mediafire.com/file/wzhnuu6jniby2oo/world.mnetplus_3.38.0.apks/file?dkey=4sagfzcstns&r=1771'
 
 jobs:
   twin-patch-mode:
@@ -42,12 +42,12 @@ jobs:
           npm install -g apk-mitm
           pip install cloudscraper requests beautifulsoup4
           
-          # Download LSPatch dengan nama yang benar
+          # Download LSPatch
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
       - name: Create Certificate & Keystore
         run: |
-          # Menggunakan printf untuk menghindari error indentasi EOF
+          # Menggunakan printf agar lebih aman dari error indentasi
           printf "%s\n" "-----BEGIN CERTIFICATE-----
           MIIFETCCA/mgAwIBAgIUOkl2iSzmLNvVqAPLtLk5WxAWItAwDQYJKoZIhvcNAQEL
           BQAwgZUxCzAJBgNVBAYTAkNOMREwDwYDVQQIDAhTaGFuZ2hhaTERMA8GA1UEBwwI
@@ -99,7 +99,6 @@ jobs:
           print(f"🔗 Processing URL: {url}")
           
           try:
-              # Logika khusus Mediafire
               if 'mediafire.com' in url:
                   html = scraper.get(url).text
                   soup = BeautifulSoup(html, 'html.parser')
@@ -124,14 +123,12 @@ jobs:
 
       - name: Download Android Faker Module
         run: |
-           # Link backup jika yang pertama mati
-           wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file" -O module.apk || echo "⚠️ Download module gagal, pastikan link valid"
+           wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file" -O module.apk || echo "⚠️ Download module gagal"
 
       - name: Prepare Workspace
         run: |
           mkdir -p original_workspace workspace_reqable workspace_lspatch
           
-          # Cek tipe file (ZIP/XAPK atau APK)
           if unzip -t download.apks >/dev/null 2>&1; then
               echo "📦 File adalah Archive (XAPK/APKS)"
               unzip -q download.apks -d original_workspace
@@ -140,18 +137,16 @@ jobs:
               mv download.apks original_workspace/base.apk
           fi
           
-          # Cek keberadaan base.apk
           if [ ! -f "original_workspace/base.apk" ]; then
              echo "❌ Error: base.apk tidak ditemukan!"
              ls -R original_workspace
              exit 1
           fi
 
-          # Copy ke workspace terpisah
           cp -r original_workspace/* workspace_reqable/
           cp -r original_workspace/* workspace_lspatch/
 
-      - name: [Mode 1] Reqable Patching
+      - name: "Mode 1 - Reqable Patching"
         continue-on-error: true
         run: |
           cd workspace_reqable
@@ -160,7 +155,6 @@ jobs:
           
           if [ -f "base-patched.apk" ]; then
              mv base-patched.apk base.apk
-             # Signing
              for apk in *.apk; do
                 zipalign -p -f -v 4 "$apk" "aligned_$apk"
                 mv "aligned_$apk" "$apk"
@@ -171,7 +165,7 @@ jobs:
              echo "❌ Reqable Patch Gagal"
           fi
 
-      - name: [Mode 2] LSPatch Patching
+      - name: "Mode 2 - LSPatch Patching"
         continue-on-error: true
         run: |
           cd workspace_lspatch
@@ -181,7 +175,6 @@ jobs:
           TARGET=$(find . -name "*-lspatched.apk")
           if [ ! -z "$TARGET" ]; then
              mv "$TARGET" base.apk
-             # Signing
              for apk in *.apk; do
                 zipalign -p -f -v 4 "$apk" "aligned_$apk"
                 mv "aligned_$apk" "$apk"

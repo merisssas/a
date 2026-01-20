@@ -216,12 +216,21 @@ jobs:
 
       - name: Tahap 3 - Final Signing (Android 15 Fix)
         run: |
-          # [FIX] Hapus signature lama dari LSPatch agar tidak di-SKIP oleh signer
-          echo "🗑️ Menghapus signature lama (Unsigning)..."
-          zip -d unsigned_final.apk 'META-INF/*'
+          # [FIX ZIP STRUCTURE]
+          # Menggunakan zip -FF untuk memperbaiki header ZIP yang rusak akibat LSPatch/zipalign
+          # Ini mencegah error "Local Entry Flag does not match CD"
+          echo "🔧 Memperbaiki struktur ZIP sebelum unsigning..."
+          zip -FF unsigned_final.apk --out clean_structure.apk
           
-          # Sign ulang dengan overwrite
-          java -jar signer.jar --apks unsigned_final.apk --overwrite
+          # [UNSIGN]
+          # Sekarang aman untuk menghapus META-INF dari file yang sudah dibersihkan
+          echo "🗑️ Menghapus signature lama..."
+          zip -d clean_structure.apk "META-INF/*"
+          
+          # [SIGN]
+          # Sign ulang dengan Uber APK Signer
+          echo "✍️ Signing ulang..."
+          java -jar signer.jar --apks clean_structure.apk
           
           FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
           

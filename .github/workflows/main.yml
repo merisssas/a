@@ -36,7 +36,7 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y aapt
+          sudo apt-get install -y aapt zip unzip
           
           # 1. Install APK-MITM (Patcher Network)
           npm install -g apk-mitm
@@ -216,14 +216,18 @@ jobs:
 
       - name: Tahap 3 - Final Signing (Android 15 Fix)
         run: |
-          # PERBAIKAN: Menambahkan --overwrite agar signer mau menimpa signature lama
+          # [FIX] Hapus signature lama dari LSPatch agar tidak di-SKIP oleh signer
+          echo "🗑️ Menghapus signature lama (Unsigning)..."
+          zip -d unsigned_final.apk 'META-INF/*'
+          
+          # Sign ulang dengan overwrite
           java -jar signer.jar --apks unsigned_final.apk --overwrite
           
           FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
           
           if [ -z "$FINAL_APK" ]; then
              echo "❌ Gagal Signing! File output tidak ditemukan."
-             ls -la # Debugging: lihat file apa yang ada
+             ls -la
              exit 1
           fi
           

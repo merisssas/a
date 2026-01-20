@@ -1,4 +1,4 @@
-name: Super Patcher V15 (Twin Mode)
+name: Super Patcher V16 (Robust Mode)
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
           npm install -g apk-mitm
           pip install cloudscraper requests beautifulsoup4
           
-          # Download LSPatch (Direct GitHub link works with wget)
+          # Download LSPatch
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
 
       - name: Create Certificate & Keystore
@@ -115,7 +115,6 @@ jobs:
               print(f"❌ Error: {e}")
               sys.exit(1)
 
-      # FIX: Use Python/Cloudscraper for Module too (Wget fails on Mediafire)
       - name: Download Android Faker Module
         shell: python
         run: |
@@ -155,7 +154,6 @@ jobs:
         run: |
           mkdir -p original_workspace workspace_reqable workspace_lspatch
           
-          # Check if file exists and is not empty
           if [ ! -s "download.apks" ]; then
              echo "❌ Error: download.apks is missing or empty"
              exit 1
@@ -169,14 +167,22 @@ jobs:
               mv download.apks original_workspace/base.apk
           fi
           
-          if [ ! -f "original_workspace/base.apk" ]; then
-             echo "❌ Error: base.apk not found in extracted files!"
+          # Find base.apk recursively if not at root
+          BASE_PATH=$(find original_workspace -name "base.apk" -o -name "*.apk" | head -n 1)
+          if [ -z "$BASE_PATH" ]; then
+             echo "❌ Error: No APK file found in extracted contents!"
              ls -R original_workspace
              exit 1
           fi
-
-          cp -r original_workspace/* workspace_reqable/
-          cp -r original_workspace/* workspace_lspatch/
+          
+          # Ensure base.apk is in the root of the workspace folders
+          echo "📦 Found Base APK at: $BASE_PATH"
+          cp "$BASE_PATH" workspace_reqable/base.apk
+          cp "$BASE_PATH" workspace_lspatch/base.apk
+          
+          # Copy other splits if they exist (for APKS support)
+          cp -n original_workspace/*.apk workspace_reqable/ 2>/dev/null || true
+          cp -n original_workspace/*.apk workspace_lspatch/ 2>/dev/null || true
 
       - name: "Mode 1 - Reqable Patching"
         id: reqable
@@ -185,22 +191,27 @@ jobs:
           cd workspace_reqable
           echo "🔵 Patching Reqable..."
           
-          # Increased memory limit for node to prevent crash
-          export NODE_OPTIONS="--max-old-space-size=4096"
+          # Force Node to use more memory
+          export NODE_OPTIONS="--max-old-space-size=8192"
           
-          apk-mitm base.apk --certificate ../reqable.pem
+          # NOTE: Added --skip-signing to prevent crashes. We sign manually below.
+          apk-mitm base.apk --certificate ../reqable.pem --skip-signing
           
           if [ -f "base-patched.apk" ]; then
+             echo "✅ Patch success! Renaming and Signing..."
              mv base-patched.apk base.apk
+             
              for apk in *.apk; do
+                echo "🔏 Signing $apk..."
                 zipalign -p -f -v 4 "$apk" "aligned_$apk"
                 mv "aligned_$apk" "$apk"
                 apksigner sign --ks ../debug.keystore --ks-pass pass:android "$apk"
              done
              zip -r -q ../Reqable_Version.apks .
-             echo "✅ Reqable Success"
+             echo "✅ Reqable Artifact Created"
           else
-             echo "❌ Reqable Patch Failed (Check logs for apk-mitm error)"
+             echo "❌ Reqable Patch Failed (Output file not found)"
+             ls -la
              exit 1
           fi
 
@@ -212,24 +223,31 @@ jobs:
           echo "🟣 Patching LSPatch..."
           
           if [ ! -s "../module.apk" ]; then
-             echo "❌ Module APK is missing or invalid"
+             echo "❌ Module APK is missing"
              exit 1
           fi
 
+          # Attempt patch
           java -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
           
+          # Find output (LSPatch naming can vary)
           TARGET=$(find . -name "*-lspatched.apk")
+          
           if [ ! -z "$TARGET" ]; then
+             echo "✅ Patch success! Found: $TARGET"
              mv "$TARGET" base.apk
+             
              for apk in *.apk; do
+                echo "🔏 Signing $apk..."
                 zipalign -p -f -v 4 "$apk" "aligned_$apk"
                 mv "aligned_$apk" "$apk"
                 apksigner sign --ks ../debug.keystore --ks-pass pass:android "$apk"
              done
              zip -r -q ../LSPatch_Version.apks .
-             echo "✅ LSPatch Success"
+             echo "✅ LSPatch Artifact Created"
           else
-             echo "❌ LSPatch Failed"
+             echo "❌ LSPatch Failed (Output file not found)"
+             ls -la
              exit 1
           fi
 

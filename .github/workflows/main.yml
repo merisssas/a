@@ -1,16 +1,16 @@
-name: Super Patcher V13 (APKS to APK Converter)
+name: Super Patcher V14 (Split APKS Preservation Mode)
 
 on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Link File (APK / APKS / XAPK)'
+        description: 'Link File (APKS / XAPK Only)'
         required: true
         type: string
         default: 'https://www.mediafire.com/file/lxciw8l36u045wn/Mnet+Plus_3.38.0.apk/file'
 
 jobs:
-  convert-and-patch:
+  split-patch-mode:
     runs-on: ubuntu-latest
     
     steps:
@@ -36,24 +36,20 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          # Menambahkan 'zip' dan 'unzip' yang krusial untuk metode repack
-          sudo apt-get install -y aapt zipalign apksigner zip unzip
+          sudo apt-get install -y zipalign apksigner zip unzip
           
-          # 1. Install APK-MITM (Patcher Network)
+          # 1. Install APK-MITM
           npm install -g apk-mitm
           
-          # 2. Download LSPatch (Injector Module)
+          # 2. Download LSPatch
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
           
-          # 3. Download Uber APK Signer (Signer Android 15)
+          # 3. Download Uber APK Signer
           wget "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar" -O signer.jar
-          
-          # 4. [BARU] Download APKEditor (Untuk Convert APKS ke APK)
-          wget "https://github.com/REAndroid/APKEditor/releases/download/V1.3.8/APKEditor-1.3.8.jar" -O APKEditor.jar
           
           pip install cloudscraper requests beautifulsoup4
 
-      - name: Create Certificate File
+      - name: Create Certificate (Reqable)
         run: |
           cat <<EOF > reqable.pem
           -----BEGIN CERTIFICATE-----
@@ -103,14 +99,12 @@ jobs:
           url = os.environ['APK_URL']
           scraper = cloudscraper.create_scraper(browser='chrome')
 
-          # Logic Rename berdasarkan ekstensi URL
-          filename = "raw_download.apk" 
-          if ".apks" in url.lower(): filename = "raw_download.apks"
-          if ".xapk" in url.lower(): filename = "raw_download.xapk"
+          # Default name
+          filename = "download.apks" 
 
           print(f"🔗 URL: {url}")
           
-          # Scrape Mediafire
+          # Scrape Mediafire Logic
           need_scrape = False
           if 'mediafire.com' in url:
               if 'download' in urlparse(url).netloc: need_scrape = False
@@ -125,15 +119,11 @@ jobs:
                   if download_btn and download_btn.get('href'):
                       url = download_btn.get('href')
                       if url.startswith('//'): url = 'https:' + url
-                      print(f"✅ Direct Link: {url}")
                   else:
                       match = re.search(r'href="((https?:)?//download[^"]+)"', html)
                       if match:
                           url = match.group(1)
                           if url.startswith('//'): url = 'https:' + url
-                          print(f"✅ Regex Link: {url}")
-                      else:
-                          sys.exit(1)
               except Exception as e:
                   print(str(e))
                   sys.exit(1)
@@ -142,15 +132,9 @@ jobs:
           try:
               with scraper.get(url, stream=True, timeout=60) as r:
                   if r.status_code != 200: sys.exit(1)
-                  total_size = int(r.headers.get('content-length', 0))
                   with open(filename, 'wb') as f:
-                      dl_size = 0
                       for chunk in r.iter_content(chunk_size=1024*1024): 
-                          if chunk:
-                              f.write(chunk)
-                              dl_size += len(chunk)
-                              if dl_size % (10*1024*1024) == 0: print(f"{dl_size/1024/1024:.2f} MB")
-                  print(f"✅ Total: {dl_size/1024/1024:.2f} MB")
+                          if chunk: f.write(chunk)
           except Exception as e:
               sys.exit(1)
 
@@ -158,105 +142,103 @@ jobs:
         run: |
           wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=1dxu0ul7601&r=1660" -O module.apk
 
-      # [LANGKAH BARU] Convert APKS -> APK
-      - name: Convert APKS to APK (Merger)
+      - name: Extract & Analyze Bundle
         run: |
-          echo "🛠️ Memeriksa tipe file..."
+          echo "📦 Membongkar APKS/XAPK..."
+          unzip -q download.apks -d workspace
           
-          if [ -f "raw_download.apks" ] || [ -f "raw_download.xapk" ]; then
-             echo "📦 File Split terdeteksi. Memulai penggabungan (Merging)..."
-             
-             # Rename xapk ke apks biar konsisten
-             if [ -f "raw_download.xapk" ]; then mv raw_download.xapk raw_download.apks; fi
-             
-             # Gunakan APKEditor untuk merge
-             java -jar APKEditor.jar m -i raw_download.apks -o target.apk
-             
-             echo "✅ Berhasil Merge! Sekarang sudah jadi Single APK."
-          else
-             echo "📄 File sudah berupa Single APK. Langsung rename."
-             mv raw_download.apk target.apk
-          fi
-
-      - name: Check Architecture (Realme Note 50 Check)
-        run: |
-          echo "🔍 Menganalisis Arsitektur APK..."
-          ARCH_INFO=$(aapt dump badging target.apk | grep "native-code")
-          echo "📋 $ARCH_INFO"
+          echo "🔍 Menganalisis Isi..."
+          ls -R workspace
           
-          if [[ "$ARCH_INFO" == *"arm64"* ]] && [[ "$ARCH_INFO" != *"armeabi-v7a"* ]]; then
-            echo "================================================================"
-            echo "⚠️  BAHAYA: File hasil merge ini HANYA 64-BIT (arm64-v8a)!"
-            echo "⚠️  Realme Note 50 (OS 32-bit) TIDAK BISA menginstall ini."
-            echo "================================================================"
-          else
-            echo "✅ Aman: Library 32-bit (armeabi-v7a) terdeteksi atau Java-only."
-          fi
-
-      - name: Tahap 1 - Patch Network (Reqable)
-        run: |
-          # Sekarang inputnya pasti 'target.apk'
-          apk-mitm target.apk --certificate reqable.pem
-          
-          # Hasilnya pasti 'target-patched.apk'
-          mv target-patched.apk step1.apk
-
-      - name: Tahap 2 - Inject Spoofer (LSPatch)
-        run: |
-          # Inject level 2
-          java -jar lspatch.jar step1.apk -m module.apk -f -l 2
-          
-          # Karena inputnya Single APK, outputnya pasti '-lspatched.apk'
-          OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "*-lspatched.apk" | head -n 1)
-          
-          if [ -z "$OUTPUT_LSPATCH" ]; then
-             echo "❌ Gagal patch LSPatch!"
+          if [ ! -f "workspace/base.apk" ]; then
+             echo "❌ Error: Tidak ditemukan 'base.apk' di dalam bundle."
+             echo "Pastikan link yang dimasukkan adalah XAPK atau APKS."
              exit 1
           fi
-          mv "$OUTPUT_LSPATCH" unsigned_final.apk
 
-      - name: Tahap 3 - Final Signing (Repack Fix)
+          # Cek kompabilitas 32-bit untuk Realme
+          if ls workspace/config.armeabi_v7a.apk 1> /dev/null 2>&1 || ls workspace/split_config.armeabi_v7a.apk 1> /dev/null 2>&1; then
+             echo "✅ Berita Bagus: Bundle ini punya library 32-bit (armeabi-v7a)!"
+             echo "✅ Harusnya kompatibel dengan Realme Note 50 kamu."
+          else
+             echo "⚠️ PERINGATAN: Bundle ini sepertinya hanya 64-bit."
+             echo "⚠️ Jika HP kamu 32-bit, instalasi mungkin masih akan gagal."
+          fi
+
+      - name: Patching Base APK (Network & Module)
         run: |
-          # [STRATEGI BARU: REPACKING TOTAL]
-          # Karena file APK hasil LSPatch memiliki header CRC yang rusak (Verification FAILED),
-          # kita harus membongkar isinya dan membungkus ulang untuk memperbaiki strukturnya.
+          cd workspace
           
-          echo "🔧 Memulai Repacking untuk memperbaiki CRC..."
+          echo "🛡️ Tahap 1: Patching Network (Reqable) pada base.apk..."
+          apk-mitm base.apk --certificate ../reqable.pem
           
-          # 1. Buat folder temp
-          mkdir -p repack_temp
+          # apk-mitm outputnya: base-patched.apk
+          if [ ! -f "base-patched.apk" ]; then
+             echo "❌ Gagal patch network!"
+             exit 1
+          fi
           
-          # 2. Extract APK (gunakan unzip). -o = overwrite, -q = quiet
-          # Gunakan '|| true' agar script tidak mati jika ada warning CRC saat unzip
-          unzip -q -o unsigned_final.apk -d repack_temp || echo "⚠️ Warning: Unzip menemukan error CRC, mencoba melanjutkan..."
+          echo "💉 Tahap 2: Inject LSPatch pada base-patched.apk..."
+          java -jar ../lspatch.jar base-patched.apk -m ../module.apk -f -l 2
           
-          # 3. Hapus Signature lama yang bikin error
-          rm -rf repack_temp/META-INF
+          # LSPatch output: base-patched-lspatched.apk
+          TARGET=$(find . -maxdepth 1 -name "*-lspatched.apk")
           
-          # 4. Bungkus ulang (Zip) menjadi APK baru
-          # Ini akan membuat file baru dengan CRC yang valid
-          cd repack_temp
-          zip -r -q ../fixed_structure.apk .
+          if [ -z "$TARGET" ]; then
+             echo "❌ Gagal inject LSPatch!"
+             exit 1
+          fi
+          
+          echo "🔄 Mengganti base.apk asli dengan hasil patch..."
+          mv "$TARGET" base.apk
+          
+          # Hapus file sisa patch
+          rm base-patched.apk
+          
+          cd ..
+
+      - name: Cleaning & Re-Signing ALL Splits
+        run: |
+          echo "🧹 Membersihkan signature lama dari SEMUA file APK di bundle..."
+          # Kita harus menghapus META-INF dari semua apk (base, config, split, dll)
+          # Agar nanti bisa ditandatangani ulang secara seragam.
+          
+          find workspace -name "*.apk" -print0 | xargs -0 -I {} zip -d {} "META-INF/*" || true
+          
+          echo "✍️ Menandatangani SEMUA APK dalam bundle..."
+          # Uber APK Signer bisa sign satu folder sekaligus.
+          # Ini penting! Semua split harus punya signature yang SAMA persis.
+          java -jar signer.jar -d workspace --overwrite
+          
+          # Hapus file yang belum di-sign (karena --overwrite kadang membuat file baru jika nama beda)
+          # Namun flag --overwrite di uber-signer v1.3.0 biasanya menimpa jika dikonfigurasi benar,
+          # Tapi defaultnya dia bikin *-debugSigned.apk. Kita perlu rename balik.
+          
+          cd workspace
+          for f in *-debugSigned.apk; do
+              # Jika ada file hasil sign
+              if [ -f "$f" ]; then
+                  original_name="${f%-debugSigned.apk}.apk" # Hapus suffix
+                  original_name="${original_name%-aligned}.apk" # Jaga-jaga ada aligned
+                  mv "$f" "$original_name"
+              fi
+          done
+          
+          # Hapus sisa-sisa file unsigned jika masih ada (optional, tapi zip akan ambil semua)
+          rm -f *-aligned.apk
+          cd ..
+
+      - name: Repackaging to APKS
+        run: |
+          echo "📦 Membungkus ulang menjadi .APKS..."
+          cd workspace
+          zip -r -q ../Patched_App.apks .
           cd ..
           
-          # 5. Sign ulang dengan Uber APK Signer
-          # Signer ini otomatis melakukan 'zipalign' juga.
-          echo "✍️ Signing ulang APK yang sudah di-repack..."
-          java -jar signer.jar --apks fixed_structure.apk
-          
-          # Uber signer akan menghasilkan file dengan akhiran -aligned-debugSigned.apk
-          FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
-          
-          if [ -z "$FINAL_APK" ]; then
-             echo "❌ Gagal Signing! File output tidak ditemukan."
-             ls -la
-             exit 1
-          fi
-          
-          mv "$FINAL_APK" "Final_App_Ready.apk"
+          echo "✅ Selesai! File siap diupload."
 
-      - name: Upload Hasil Akhir
+      - name: Upload Hasil (APKS)
         uses: actions/upload-artifact@v4
         with:
-          name: Final_App_Ready
-          path: Final_App_Ready.apk
+          name: Patched_App_For_SAI
+          path: Patched_App.apks

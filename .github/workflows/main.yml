@@ -1,16 +1,16 @@
-name: Super Patcher V11 (APKS/XAPK Support + Android 15)
+name: Super Patcher V13 (APKS to APK Converter)
 
 on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Link APK / APKS / XAPK (Versi Universal/32-bit)'
+        description: 'Link File (APK / APKS / XAPK)'
         required: true
         type: string
         default: 'https://www.mediafire.com/file/lxciw8l36u045wn/Mnet+Plus_3.38.0.apk/file'
 
 jobs:
-  inject-everything:
+  convert-and-patch:
     runs-on: ubuntu-latest
     
     steps:
@@ -33,11 +33,24 @@ jobs:
         with:
           python-version: '3.10' 
 
-      # Install AAPT
-      - name: Install Android Tools
+      - name: Install Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y aapt
+          
+          # 1. Install APK-MITM (Patcher Network)
+          npm install -g apk-mitm
+          
+          # 2. Download LSPatch (Injector Module)
+          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
+          
+          # 3. Download Uber APK Signer (Signer Android 15)
+          wget "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar" -O signer.jar
+          
+          # 4. [BARU] Download APKEditor (Untuk Convert APKS ke APK)
+          wget "https://github.com/REAndroid/APKEditor/releases/download/V1.3.8/APKEditor-1.3.8.jar" -O APKEditor.jar
+          
+          pip install cloudscraper requests beautifulsoup4
 
       - name: Create Certificate File
         run: |
@@ -74,14 +87,7 @@ jobs:
           -----END CERTIFICATE-----
           EOF
 
-      - name: Install Tools
-        run: |
-          npm install -g apk-mitm
-          wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
-          wget "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar" -O signer.jar
-          pip install cloudscraper requests beautifulsoup4
-
-      - name: Download File (APK/APKS/XAPK)
+      - name: Download File
         shell: python
         env:
           APK_URL: ${{ inputs.apk_url }}
@@ -93,29 +99,22 @@ jobs:
           from bs4 import BeautifulSoup
           from urllib.parse import urlparse
 
-          original_url = os.environ['APK_URL']
-          url = original_url
+          url = os.environ['APK_URL']
           scraper = cloudscraper.create_scraper(browser='chrome')
 
-          print(f"🔗 Menganalisis URL: {url}")
+          # Logic Rename berdasarkan ekstensi URL
+          filename = "raw_download.apk" 
+          if ".apks" in url.lower(): filename = "raw_download.apks"
+          if ".xapk" in url.lower(): filename = "raw_download.xapk"
+
+          print(f"🔗 URL: {url}")
           
-          # Deteksi Ekstensi File
-          filename = "input_file.apk" # Default
-          if ".apks" in url:
-             filename = "input_file.apks"
-             print("📦 Tipe File: Split APKS")
-          elif ".xapk" in url:
-             filename = "input_file.xapk"
-             print("📦 Tipe File: XAPK Bundle")
-          
+          # Scrape Mediafire
           need_scrape = False
           if 'mediafire.com' in url:
-              if 'download' in urlparse(url).netloc:
-                  need_scrape = False
-              elif '/file/' in url:
-                  need_scrape = True
-              else:
-                  need_scrape = True
+              if 'download' in urlparse(url).netloc: need_scrape = False
+              elif '/file/' in url: need_scrape = True
+              else: need_scrape = True
 
           if need_scrape:
               try:
@@ -125,26 +124,23 @@ jobs:
                   if download_btn and download_btn.get('href'):
                       url = download_btn.get('href')
                       if url.startswith('//'): url = 'https:' + url
-                      print(f"✅ Direct Link ditemukan: {url}")
+                      print(f"✅ Direct Link: {url}")
                   else:
                       match = re.search(r'href="((https?:)?//download[^"]+)"', html)
                       if match:
                           url = match.group(1)
                           if url.startswith('//'): url = 'https:' + url
-                          print(f"✅ Direct Link (Regex) ditemukan: {url}")
+                          print(f"✅ Regex Link: {url}")
                       else:
-                          print("❌ FATAL: Gagal Scrape.")
                           sys.exit(1)
               except Exception as e:
-                  print(f"❌ Error Scrape: {str(e)}")
+                  print(str(e))
                   sys.exit(1)
 
-          print(f"⬇️ Sedang mendownload ke {filename}...")
+          print(f"⬇️ Downloading to {filename}...")
           try:
               with scraper.get(url, stream=True, timeout=60) as r:
-                  if r.status_code != 200:
-                      print(f"❌ Gagal akses URL: {r.status_code}")
-                      sys.exit(1)
+                  if r.status_code != 200: sys.exit(1)
                   total_size = int(r.headers.get('content-length', 0))
                   with open(filename, 'wb') as f:
                       dl_size = 0
@@ -152,67 +148,67 @@ jobs:
                           if chunk:
                               f.write(chunk)
                               dl_size += len(chunk)
-                              if total_size > 0 and dl_size % (10 * 1024 * 1024) == 0:
-                                  print(f"   ... {dl_size/1024/1024:.2f} MB")
-                  print(f"✅ Download Selesai. Total: {dl_size/1024/1024:.2f} MB")
-                  if dl_size < 1048576: 
-                      print("❌ ERROR: File < 1MB.")
-                      sys.exit(1)
+                              if dl_size % (10*1024*1024) == 0: print(f"{dl_size/1024/1024:.2f} MB")
+                  print(f"✅ Total: {dl_size/1024/1024:.2f} MB")
           except Exception as e:
-              print(f"❌ Download Gagal: {str(e)}")
               sys.exit(1)
 
       - name: Download Android Faker
         run: |
-          LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
-          if [ -z "$LATEST_URL" ]; then
-             wget "https://github.com/Android1500/AndroidFaker/releases/download/1.2.0/AndroidFaker_1.2.0.apk" -O module.apk
+          wget "https://github.com/Android1500/AndroidFaker/releases/download/1.2.0/AndroidFaker_1.2.0.apk" -O module.apk
+
+      # [LANGKAH BARU] Convert APKS -> APK
+      - name: Convert APKS to APK (Merger)
+        run: |
+          echo "🛠️ Memeriksa tipe file..."
+          
+          if [ -f "raw_download.apks" ] || [ -f "raw_download.xapk" ]; then
+             echo "📦 File Split terdeteksi. Memulai penggabungan (Merging)..."
+             
+             # Rename xapk ke apks biar konsisten
+             if [ -f "raw_download.xapk" ]; then mv raw_download.xapk raw_download.apks; fi
+             
+             # Gunakan APKEditor untuk merge
+             # Command: m (merge) -i (input) -o (output)
+             java -jar APKEditor.jar m -i raw_download.apks -o target.apk
+             
+             echo "✅ Berhasil Merge! Sekarang sudah jadi Single APK."
           else
-             wget "$LATEST_URL" -O module.apk
+             echo "📄 File sudah berupa Single APK. Langsung rename."
+             mv raw_download.apk target.apk
           fi
 
-      - name: Tahap 1 - Auto Merge & Patch Network (Reqable)
+      - name: Check Architecture (Realme Note 50 Check)
         run: |
-          echo "Membuka & Menggabungkan (jika APKS)..."
-          
-          # Cari file input apapun ekstensinya
-          INPUT_FILE=$(ls input_file.* | head -n 1)
-          echo "Memproses file: $INPUT_FILE"
-          
-          # apk-mitm akan otomatis merge APKS/XAPK jadi satu file APK
-          apk-mitm "$INPUT_FILE" --certificate reqable.pem
-          
-          # Cari hasil patch (biasanya berakhiran -patched.apk)
-          PATCHED_FILE=$(find . -maxdepth 1 -type f -name "*-patched.apk" | head -n 1)
-          
-          if [ -z "$PATCHED_FILE" ]; then
-             echo "❌ Gagal Patch / Merge APKS!"
-             exit 1
-          fi
-          
-          echo "✅ Sukses Merge & Patch! Rename ke step1.apk"
-          mv "$PATCHED_FILE" step1.apk
-
-      - name: Check Architecture (Post-Merge)
-        run: |
-          echo "🔍 Cek Arsitektur APK Hasil Merge..."
-          ARCH_INFO=$(aapt dump badging step1.apk | grep "native-code")
+          echo "🔍 Menganalisis Arsitektur APK..."
+          ARCH_INFO=$(aapt dump badging target.apk | grep "native-code")
           echo "📋 $ARCH_INFO"
           
           if [[ "$ARCH_INFO" == *"arm64"* ]] && [[ "$ARCH_INFO" != *"armeabi-v7a"* ]]; then
-            echo "⚠️ PERINGATAN: Hasil merge ini 64-bit ONLY. Realme Note 50 mungkin menolak install."
-          elif [[ "$ARCH_INFO" == *"armeabi-v7a"* ]]; then
-            echo "✅ Aman: Library 32-bit terdeteksi."
+            echo "================================================================"
+            echo "⚠️  BAHAYA: File hasil merge ini HANYA 64-BIT (arm64-v8a)!"
+            echo "⚠️  Realme Note 50 (OS 32-bit) TIDAK BISA menginstall ini."
+            echo "⚠️  Jika instalasi gagal, cari file 'Universal' atau 'armeabi-v7a'."
+            echo "================================================================"
+          else
+            echo "✅ Aman: Library 32-bit (armeabi-v7a) terdeteksi atau Java-only."
           fi
+
+      - name: Tahap 1 - Patch Network (Reqable)
+        run: |
+          # Sekarang inputnya pasti 'target.apk' (Single APK)
+          apk-mitm target.apk --certificate reqable.pem
+          
+          # Hasilnya pasti 'target-patched.apk'
+          mv target-patched.apk step1.apk
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)
         run: |
+          # Inject level 2
           java -jar lspatch.jar step1.apk -m module.apk -f -l 2
           
+          # Karena inputnya Single APK, outputnya pasti '-lspatched.apk'
           OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "*-lspatched.apk" | head -n 1)
-          if [ -z "$OUTPUT_LSPATCH" ]; then
-             OUTPUT_LSPATCH=$(ls -t *.apk | grep -v "step1.apk" | grep -v "module.apk" | grep -v "input_file" | head -n 1)
-          fi
           
           if [ -z "$OUTPUT_LSPATCH" ]; then
              echo "❌ Gagal patch LSPatch!"
@@ -225,10 +221,10 @@ jobs:
           java -jar signer.jar --apks unsigned_final.apk
           
           FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
-          mv "$FINAL_APK" "Final_Patched_App.apk"
+          mv "$FINAL_APK" "Final_App_Ready.apk"
 
       - name: Upload Hasil Akhir
         uses: actions/upload-artifact@v4
         with:
-          name: Final_Patched_App
-          path: Final_Patched_App.apk
+          name: Final_App_Ready
+          path: Final_App_Ready.apk

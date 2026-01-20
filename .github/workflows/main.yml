@@ -1,4 +1,4 @@
-name: Super Patcher V18 (Stable Download)
+name: Super Patcher V19 (Auto-Retry on Corrupt ZIP)
 
 on:
   workflow_dispatch:
@@ -80,20 +80,35 @@ jobs:
           
           keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Download Target with Retry
+      - name: Download Target with Smart Retry
         shell: python
         env:
           APK_URL: ${{ inputs.apk_url }}
         run: |
           import cloudscraper
-          import os, sys, time
+          import os, sys, time, subprocess
           from bs4 import BeautifulSoup
 
-          def download_with_retry(url, filename, retries=3):
+          def check_integrity(filename):
+              print(f"   🔍 Verifying ZIP integrity of {filename}...")
+              # Jalankan unzip -t -q (quiet test)
+              try:
+                  result = subprocess.run(["unzip", "-t", "-q", filename], capture_output=True)
+                  if result.returncode == 0:
+                      print("   ✅ ZIP Integrity PASSED")
+                      return True
+                  else:
+                      print("   ❌ ZIP Integrity FAILED (BAD CRC/Header)")
+                      return False
+              except Exception as e:
+                  print(f"   ⚠️ Integrity check error: {e}")
+                  return False
+
+          def download_with_retry(url, filename, retries=5):
               scraper = cloudscraper.create_scraper(browser='chrome')
               
               for attempt in range(retries):
-                  print(f"🔄 Attempt {attempt+1} of {retries}...")
+                  print(f"🔄 Attempt {attempt+1}/{retries}...")
                   
                   # 1. Scrape Mediafire if needed
                   target_url = url
@@ -111,33 +126,32 @@ jobs:
                   # 2. Download
                   print(f"   ...downloading from: {target_url[:60]}...")
                   try:
-                      with scraper.get(target_url, stream=True, timeout=60) as r:
+                      with scraper.get(target_url, stream=True, timeout=90) as r:
                           if r.status_code != 200:
                               print(f"   ❌ HTTP Status: {r.status_code}")
                               time.sleep(2)
                               continue
                           
-                          # Get Expected Size
-                          total_length = int(r.headers.get('content-length', 0))
-                          
                           with open(filename, 'wb') as f:
-                              for chunk in r.iter_content(chunk_size=8192):
+                              for chunk in r.iter_content(chunk_size=65536): # 64KB chunk
                                   if chunk: f.write(chunk)
                       
-                      # 3. Verification
+                      # 3. Size Check
                       file_size = os.path.getsize(filename)
-                      if total_length > 0 and file_size != total_length:
-                          print(f"   ⚠️ Incomplete! Expected {total_length}, got {file_size}")
-                          time.sleep(2)
-                          continue
-                          
                       if file_size < 1000000: # 1MB min
                           print("   ⚠️ File too small (likely error page)")
+                          os.remove(filename)
                           time.sleep(2)
                           continue
-                          
-                      print(f"✅ Success! Size: {file_size/1024/1024:.2f} MB")
-                      return True
+
+                      # 4. CRITICAL: Integrity Check INSIDE loop
+                      if check_integrity(filename):
+                          return True
+                      else:
+                          print("   ♻️ File corrupted, deleting and retrying...")
+                          os.remove(filename)
+                          time.sleep(2)
+                          continue
                       
                   except Exception as e:
                       print(f"   ❌ Error: {e}")
@@ -147,7 +161,7 @@ jobs:
 
           url = os.environ['APK_URL']
           if not download_with_retry(url, "download.apks"):
-              print("❌ FAILED to download target after multiple attempts.")
+              print("❌ FAILED to download a healthy APKS after multiple attempts.")
               sys.exit(1)
 
       - name: Download Module with Retry
@@ -189,30 +203,29 @@ jobs:
               print("❌ Failed to download module")
               sys.exit(1)
 
-      - name: Prepare Workspace & Verify
+      - name: Prepare Workspace & Extract
         run: |
           mkdir -p original_workspace workspace_reqable workspace_lspatch
           
-          echo "🔍 STRICT INTEGRITY CHECK..."
-          if unzip -t download.apks; then
-              echo "✅ Archive is Healthy"
-              unzip -q download.apks -d original_workspace
-          else
-              echo "❌ CRITICAL ERROR: The downloaded file is corrupted."
-              echo "   This usually means the connection dropped."
-              echo "   Please restart the workflow to try downloading again."
-              exit 1
-          fi
+          # Unzip is now guaranteed safe because of previous step
+          unzip -q download.apks -d original_workspace
           
-          # Find base.apk recursively
-          BASE_PATH=$(find original_workspace -name "base.apk" -o -name "*.apk" | head -n 1)
+          # Find base.apk safely (avoiding splits)
+          BASE_PATH=$(find original_workspace -type f -name "base.apk" | head -n 1)
+          
+          # Fallback: if no base.apk, look for largest apk
           if [ -z "$BASE_PATH" ]; then
-             echo "❌ Error: No APK file found in extracted contents!"
+             echo "⚠️ 'base.apk' not found by name, looking for largest APK..."
+             BASE_PATH=$(find original_workspace -name "*.apk" -printf "%s %p\n" | sort -nr | head -1 | awk '{print $2}')
+          fi
+
+          if [ -z "$BASE_PATH" ]; then
+             echo "❌ Error: No APK file found!"
              ls -R original_workspace
              exit 1
           fi
           
-          echo "📦 Found Base APK at: $BASE_PATH"
+          echo "📦 Using Base APK: $BASE_PATH"
           cp "$BASE_PATH" workspace_reqable/base.apk
           cp "$BASE_PATH" workspace_lspatch/base.apk
           

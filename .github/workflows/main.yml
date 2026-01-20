@@ -1,4 +1,4 @@
-name: Super Patcher V17 (Integrity Check)
+name: Super Patcher V18 (Stable Download)
 
 on:
   workflow_dispatch:
@@ -80,108 +80,128 @@ jobs:
           
           keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Download Target APK
+      - name: Download Target with Retry
         shell: python
         env:
           APK_URL: ${{ inputs.apk_url }}
         run: |
           import cloudscraper
-          import os, sys
+          import os, sys, time
           from bs4 import BeautifulSoup
 
-          url = os.environ['APK_URL']
-          scraper = cloudscraper.create_scraper(browser='chrome')
-          filename = "download.apks" 
-
-          print(f"🔗 Processing URL: {url}")
-          try:
-              if 'mediafire.com' in url:
-                  html = scraper.get(url).text
-                  soup = BeautifulSoup(html, 'html.parser')
-                  download_btn = soup.find('a', {'id': 'downloadButton'})
-                  if download_btn:
-                      url = download_btn.get('href')
-          except Exception as e:
-              print(f"⚠️ Warning scraping: {e}")
-
-          print(f"⬇️ Downloading Target...")
-          try:
-              with scraper.get(url, stream=True, timeout=120) as r:
-                  if r.status_code != 200: sys.exit(1)
-                  with open(filename, 'wb') as f:
-                      for chunk in r.iter_content(chunk_size=1024*1024): 
-                          if chunk: f.write(chunk)
+          def download_with_retry(url, filename, retries=3):
+              scraper = cloudscraper.create_scraper(browser='chrome')
               
-              # INTEGRITY CHECK
-              size = os.path.getsize(filename)
-              print(f"📦 File Size: {size / 1024 / 1024:.2f} MB")
-              if size < 1000000: # Less than 1MB
-                  print("❌ Error: File too small! Likely an error page or corrupted download.")
-                  sys.exit(1)
+              for attempt in range(retries):
+                  print(f"🔄 Attempt {attempt+1} of {retries}...")
                   
-          except Exception as e:
-              print(f"❌ Error: {e}")
+                  # 1. Scrape Mediafire if needed
+                  target_url = url
+                  if 'mediafire.com' in url:
+                      try:
+                          print("   ...extracting MediaFire link")
+                          html = scraper.get(url).text
+                          soup = BeautifulSoup(html, 'html.parser')
+                          download_btn = soup.find('a', {'id': 'downloadButton'})
+                          if download_btn:
+                              target_url = download_btn.get('href')
+                      except Exception as e:
+                          print(f"   ⚠️ Scrape warning: {e}")
+
+                  # 2. Download
+                  print(f"   ...downloading from: {target_url[:60]}...")
+                  try:
+                      with scraper.get(target_url, stream=True, timeout=60) as r:
+                          if r.status_code != 200:
+                              print(f"   ❌ HTTP Status: {r.status_code}")
+                              time.sleep(2)
+                              continue
+                          
+                          # Get Expected Size
+                          total_length = int(r.headers.get('content-length', 0))
+                          
+                          with open(filename, 'wb') as f:
+                              for chunk in r.iter_content(chunk_size=8192):
+                                  if chunk: f.write(chunk)
+                      
+                      # 3. Verification
+                      file_size = os.path.getsize(filename)
+                      if total_length > 0 and file_size != total_length:
+                          print(f"   ⚠️ Incomplete! Expected {total_length}, got {file_size}")
+                          time.sleep(2)
+                          continue
+                          
+                      if file_size < 1000000: # 1MB min
+                          print("   ⚠️ File too small (likely error page)")
+                          time.sleep(2)
+                          continue
+                          
+                      print(f"✅ Success! Size: {file_size/1024/1024:.2f} MB")
+                      return True
+                      
+                  except Exception as e:
+                      print(f"   ❌ Error: {e}")
+                      time.sleep(2)
+              
+              return False
+
+          url = os.environ['APK_URL']
+          if not download_with_retry(url, "download.apks"):
+              print("❌ FAILED to download target after multiple attempts.")
               sys.exit(1)
 
-      - name: Download Android Faker Module
+      - name: Download Module with Retry
         shell: python
         run: |
           import cloudscraper
-          import sys, os
+          import os, sys, time
           from bs4 import BeautifulSoup
 
-          url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=5tgobredp9d&r=1430"
-          scraper = cloudscraper.create_scraper(browser='chrome')
-          filename = "module.apk"
+          def download_with_retry(url, filename, retries=3):
+              scraper = cloudscraper.create_scraper(browser='chrome')
+              for attempt in range(retries):
+                  print(f"🔄 Attempt {attempt+1}/{retries}...")
+                  target_url = url
+                  if 'mediafire.com' in url:
+                      try:
+                          html = scraper.get(url).text
+                          soup = BeautifulSoup(html, 'html.parser')
+                          btn = soup.find('a', {'id': 'downloadButton'})
+                          if btn: target_url = btn.get('href')
+                      except: pass
+                  
+                  try:
+                      with scraper.get(target_url, stream=True, timeout=60) as r:
+                          if r.status_code != 200: continue
+                          with open(filename, 'wb') as f:
+                              for chunk in r.iter_content(chunk_size=8192):
+                                  if chunk: f.write(chunk)
+                      
+                      if os.path.getsize(filename) > 10000:
+                          print("✅ Module Downloaded")
+                          return True
+                  except:
+                      time.sleep(2)
+              return False
 
-          print(f"🔗 Processing Module URL...")
-          try:
-              html = scraper.get(url).text
-              soup = BeautifulSoup(html, 'html.parser')
-              download_btn = soup.find('a', {'id': 'downloadButton'})
-              if download_btn:
-                  url = download_btn.get('href')
-          except Exception as e:
-              print(f"⚠️ Warning scraping module: {e}")
-
-          print(f"⬇️ Downloading Module...")
-          try:
-              with scraper.get(url, stream=True, timeout=120) as r:
-                  if r.status_code != 200: sys.exit(1)
-                  with open(filename, 'wb') as f:
-                      for chunk in r.iter_content(chunk_size=1024*1024): 
-                          if chunk: f.write(chunk)
-              
-              # INTEGRITY CHECK
-              size = os.path.getsize(filename)
-              print(f"📦 Module Size: {size / 1024 / 1024:.2f} MB")
-              if size < 10000: # Less than 10KB
-                 print("❌ Error: Module file invalid/corrupt.")
-                 sys.exit(1)
-
-          except Exception as e:
-              print(f"❌ Error downloading module: {e}")
+          url = "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=m7n9sf3hnst&r=1981"
+          if not download_with_retry(url, "module.apk"):
+              print("❌ Failed to download module")
               sys.exit(1)
 
-      - name: Prepare Workspace
+      - name: Prepare Workspace & Verify
         run: |
           mkdir -p original_workspace workspace_reqable workspace_lspatch
           
-          if [ ! -s "download.apks" ]; then
-             echo "❌ Error: download.apks is missing or empty"
-             exit 1
-          fi
-
-          # Removed >/dev/null to SEE the errors if verification fails
-          echo "🔍 Verifying Archive Integrity..."
+          echo "🔍 STRICT INTEGRITY CHECK..."
           if unzip -t download.apks; then
-              echo "📦 File is Valid Archive (XAPK/APKS)"
+              echo "✅ Archive is Healthy"
               unzip -q download.apks -d original_workspace
           else
-              echo "⚠️ Archive Check Failed or Not an Archive."
-              # Try treating as single APK, but if unzip -t failed with 'verification failed', it is corrupt.
-              # We will try to proceed but warn.
-              mv download.apks original_workspace/base.apk
+              echo "❌ CRITICAL ERROR: The downloaded file is corrupted."
+              echo "   This usually means the connection dropped."
+              echo "   Please restart the workflow to try downloading again."
+              exit 1
           fi
           
           # Find base.apk recursively
@@ -238,11 +258,6 @@ jobs:
           cd workspace_lspatch
           echo "🟣 Patching LSPatch..."
           
-          if [ ! -s "../module.apk" ]; then
-             echo "❌ Module APK is missing"
-             exit 1
-          fi
-
           # Added -Xmx2G to prevent Java OOM
           java -Xmx2G -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
           

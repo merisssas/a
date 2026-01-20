@@ -1,10 +1,10 @@
-name: Super Patcher V10 (Arch Checker + Android 15 Fix)
+name: Super Patcher V11 (APKS/XAPK Support + Android 15)
 
 on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Masukkan Link APK (Cari versi armeabi-v7a / Universal!)'
+        description: 'Link APK / APKS / XAPK (Versi Universal/32-bit)'
         required: true
         type: string
         default: 'https://www.mediafire.com/file/lxciw8l36u045wn/Mnet+Plus_3.38.0.apk/file'
@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.10' 
 
-      # Install AAPT untuk cek arsitektur (32 vs 64 bit)
+      # Install AAPT
       - name: Install Android Tools
         run: |
           sudo apt-get update
@@ -81,7 +81,7 @@ jobs:
           wget "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar" -O signer.jar
           pip install cloudscraper requests beautifulsoup4
 
-      - name: Download APK
+      - name: Download File (APK/APKS/XAPK)
         shell: python
         env:
           APK_URL: ${{ inputs.apk_url }}
@@ -98,6 +98,16 @@ jobs:
           scraper = cloudscraper.create_scraper(browser='chrome')
 
           print(f"🔗 Menganalisis URL: {url}")
+          
+          # Deteksi Ekstensi File
+          filename = "input_file.apk" # Default
+          if ".apks" in url:
+             filename = "input_file.apks"
+             print("📦 Tipe File: Split APKS")
+          elif ".xapk" in url:
+             filename = "input_file.xapk"
+             print("📦 Tipe File: XAPK Bundle")
+          
           need_scrape = False
           if 'mediafire.com' in url:
               if 'download' in urlparse(url).netloc:
@@ -129,14 +139,14 @@ jobs:
                   print(f"❌ Error Scrape: {str(e)}")
                   sys.exit(1)
 
-          print(f"⬇️ Sedang mendownload dari: {url}")
+          print(f"⬇️ Sedang mendownload ke {filename}...")
           try:
               with scraper.get(url, stream=True, timeout=60) as r:
                   if r.status_code != 200:
                       print(f"❌ Gagal akses URL: {r.status_code}")
                       sys.exit(1)
                   total_size = int(r.headers.get('content-length', 0))
-                  with open('target.apk', 'wb') as f:
+                  with open(filename, 'wb') as f:
                       dl_size = 0
                       for chunk in r.iter_content(chunk_size=1024*1024): 
                           if chunk:
@@ -152,25 +162,6 @@ jobs:
               print(f"❌ Download Gagal: {str(e)}")
               sys.exit(1)
 
-      - name: Check APK Architecture (PENTING!)
-        run: |
-          echo "🔍 Menganalisis Arsitektur APK..."
-          ARCH_INFO=$(aapt dump badging target.apk | grep "native-code")
-          echo "📋 Arsitektur yang didukung APK ini: $ARCH_INFO"
-          
-          if [[ "$ARCH_INFO" == *"arm64"* ]] && [[ "$ARCH_INFO" != *"armeabi-v7a"* ]]; then
-            echo "================================================================"
-            echo "⚠️  PERINGATAN KERAS: APK INI HANYA 64-BIT (arm64-v8a)!"
-            echo "⚠️  Jika Realme Note 50 Anda menggunakan OS 32-bit (sangat umum),"
-            echo "⚠️  APK ini PASTI GAGAL DIINSTALL."
-            echo "⚠️  Solusi: Cari link download versi 'armeabi-v7a' atau 'Universal'."
-            echo "================================================================"
-          elif [[ "$ARCH_INFO" == *"armeabi-v7a"* ]]; then
-            echo "✅ Kabar Baik: APK ini mengandung library 32-bit. Harusnya kompatibel!"
-          else
-            echo "ℹ️ Info: APK ini mungkin Universal atau tidak ada native libs."
-          fi
-
       - name: Download Android Faker
         run: |
           LATEST_URL=$(curl -s https://api.github.com/repos/Android1500/AndroidFaker/releases/latest | grep "browser_download_url" | grep ".apk" | cut -d '"' -f 4)
@@ -180,10 +171,39 @@ jobs:
              wget "$LATEST_URL" -O module.apk
           fi
 
-      - name: Tahap 1 - Patch Network (Reqable)
+      - name: Tahap 1 - Auto Merge & Patch Network (Reqable)
         run: |
-          apk-mitm target.apk --certificate reqable.pem
-          mv *-patched.apk step1.apk
+          echo "Membuka & Menggabungkan (jika APKS)..."
+          
+          # Cari file input apapun ekstensinya
+          INPUT_FILE=$(ls input_file.* | head -n 1)
+          echo "Memproses file: $INPUT_FILE"
+          
+          # apk-mitm akan otomatis merge APKS/XAPK jadi satu file APK
+          apk-mitm "$INPUT_FILE" --certificate reqable.pem
+          
+          # Cari hasil patch (biasanya berakhiran -patched.apk)
+          PATCHED_FILE=$(find . -maxdepth 1 -type f -name "*-patched.apk" | head -n 1)
+          
+          if [ -z "$PATCHED_FILE" ]; then
+             echo "❌ Gagal Patch / Merge APKS!"
+             exit 1
+          fi
+          
+          echo "✅ Sukses Merge & Patch! Rename ke step1.apk"
+          mv "$PATCHED_FILE" step1.apk
+
+      - name: Check Architecture (Post-Merge)
+        run: |
+          echo "🔍 Cek Arsitektur APK Hasil Merge..."
+          ARCH_INFO=$(aapt dump badging step1.apk | grep "native-code")
+          echo "📋 $ARCH_INFO"
+          
+          if [[ "$ARCH_INFO" == *"arm64"* ]] && [[ "$ARCH_INFO" != *"armeabi-v7a"* ]]; then
+            echo "⚠️ PERINGATAN: Hasil merge ini 64-bit ONLY. Realme Note 50 mungkin menolak install."
+          elif [[ "$ARCH_INFO" == *"armeabi-v7a"* ]]; then
+            echo "✅ Aman: Library 32-bit terdeteksi."
+          fi
 
       - name: Tahap 2 - Inject Spoofer (LSPatch)
         run: |
@@ -191,34 +211,24 @@ jobs:
           
           OUTPUT_LSPATCH=$(find . -maxdepth 1 -type f -name "*-lspatched.apk" | head -n 1)
           if [ -z "$OUTPUT_LSPATCH" ]; then
-             OUTPUT_LSPATCH=$(ls -t *.apk | grep -v "step1.apk" | grep -v "module.apk" | grep -v "target.apk" | head -n 1)
+             OUTPUT_LSPATCH=$(ls -t *.apk | grep -v "step1.apk" | grep -v "module.apk" | grep -v "input_file" | head -n 1)
           fi
           
           if [ -z "$OUTPUT_LSPATCH" ]; then
-             echo "❌ Gagal patch!"
+             echo "❌ Gagal patch LSPatch!"
              exit 1
           fi
           mv "$OUTPUT_LSPATCH" unsigned_final.apk
 
       - name: Tahap 3 - Final Signing (Android 15 Fix)
         run: |
-          echo "🔏 Signing Ulang (Uber Signer V2+V3)..."
           java -jar signer.jar --apks unsigned_final.apk
           
           FINAL_APK=$(find . -maxdepth 1 -type f -name "*-aligned-debugSigned.apk" | head -n 1)
-          if [ -z "$FINAL_APK" ]; then
-             echo "❌ Gagal Signing."
-             exit 1
-          fi
-          
-          # Rename hasil akhir agar mudah dikenali
-          NEW_NAME="MnetPlus_Patched_A15.apk"
-          mv "$FINAL_APK" "$NEW_NAME"
-          
-          echo "✅ Selesai! File: $NEW_NAME"
+          mv "$FINAL_APK" "Final_Patched_App.apk"
 
       - name: Upload Hasil Akhir
         uses: actions/upload-artifact@v4
         with:
-          name: MnetPlus_Patched_A15
-          path: MnetPlus_Patched_A15.apk
+          name: Final_Patched_App
+          path: Final_Patched_App.apk

@@ -1,4 +1,4 @@
-name: Super Patcher V15 (Twin Mode: Reqable & LSPatch Separate)
+name: Super Patcher V15 (Twin Mode)
 
 on:
   workflow_dispatch:
@@ -12,6 +12,8 @@ on:
 jobs:
   twin-patch-mode:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
       - name: Checkout
@@ -37,18 +39,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y aapt zipalign apksigner zip unzip
-          
-          # 1. Install APK-MITM
           npm install -g apk-mitm
-          
-          # 2. Download LSPatch
           wget "https://github.com/LSPosed/LSPatch/releases/download/v0.6/jar-v0.6-398-release.jar" -O lspatch.jar
-          
           pip install cloudscraper requests beautifulsoup4
 
       - name: Create Certificate & Keystore
         run: |
-          # 1. Buat Sertifikat Reqable
+          # 1. Buat Sertifikat Reqable (Isi disingkat agar rapi, pastikan isi PEM kamu lengkap)
+          # HATI-HATI: Pastikan indentation PEM certificate benar-benar rata kiri di dalam EOF
           cat <<EOF > reqable.pem
           -----BEGIN CERTIFICATE-----
           MIIFETCCA/mgAwIBAgIUOkl2iSzmLNvVqAPLtLk5WxAWItAwDQYJKoZIhvcNAQEL
@@ -82,22 +80,15 @@ jobs:
           -----END CERTIFICATE-----
           EOF
           
-          # 2. Buat Keystore Debug Konsisten
-          echo "🔐 Membuat Keystore..."
-          keytool -genkey -v -keystore debug.keystore \
-            -storepass android -alias androiddebugkey -keypass android \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Download File
+      - name: Download File (Python)
         shell: python
         env:
           APK_URL: ${{ inputs.apk_url }}
         run: |
           import cloudscraper
-          import os
-          import sys
-          import re
+          import os, sys, re
           from bs4 import BeautifulSoup
           from urllib.parse import urlparse
 
@@ -105,120 +96,99 @@ jobs:
           scraper = cloudscraper.create_scraper(browser='chrome')
           filename = "download.apks" 
 
-          print(f"🔗 URL: {url}")
-          need_scrape = False
-          if 'mediafire.com' in url:
-              if 'download' in urlparse(url).netloc: need_scrape = False
-              elif '/file/' in url: need_scrape = True
-              else: need_scrape = True
-
-          if need_scrape:
-              try:
+          print(f"🔗 Processing URL: {url}")
+          
+          # Simple Mediafire logic
+          try:
+              if 'mediafire.com' in url:
                   html = scraper.get(url).text
                   soup = BeautifulSoup(html, 'html.parser')
                   download_btn = soup.find('a', {'id': 'downloadButton'})
-                  if download_btn and download_btn.get('href'):
+                  if download_btn:
                       url = download_btn.get('href')
-                      if url.startswith('//'): url = 'https:' + url
-                  else:
-                      match = re.search(r'href="((https?:)?//download[^"]+)"', html)
-                      if match:
-                          url = match.group(1)
-                          if url.startswith('//'): url = 'https:' + url
-              except Exception as e:
-                  print(str(e))
-                  sys.exit(1)
+          except Exception as e:
+              print(f"Warning scraping failed: {e}")
 
           print(f"⬇️ Downloading to {filename}...")
           try:
-              with scraper.get(url, stream=True, timeout=60) as r:
-                  if r.status_code != 200: sys.exit(1)
+              with scraper.get(url, stream=True, timeout=120) as r:
+                  if r.status_code != 200: 
+                      print(f"Failed with status {r.status_code}")
+                      sys.exit(1)
                   with open(filename, 'wb') as f:
                       for chunk in r.iter_content(chunk_size=1024*1024): 
                           if chunk: f.write(chunk)
           except Exception as e:
+              print(f"Download Error: {e}")
               sys.exit(1)
 
       - name: Download Android Faker
+        # Link Mediafire langsung biasanya expired, lebih baik update link ini jika error
         run: |
-          wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file?dkey=1dxu0ul7601&r=1660" -O module.apk
+           wget "https://www.mediafire.com/file/32gssatb1p4pkbk/Android_Fakers.apk/file" -O module.apk || echo "Warning: Download module failed, check link validity"
 
-      - name: Extract & Prepare Workspaces
+      - name: Extract & Prepare
         run: |
-          echo "📦 Membongkar APKS/XAPK..."
-          unzip -q download.apks -d original_workspace
+          mkdir -p original_workspace workspace_reqable workspace_lspatch
           
-          # Cek kelengkapan
+          # Cek apakah file ZIP/XAPK atau APK biasa
+          if unzip -t download.apks >/dev/null 2>&1; then
+              echo "📦 Detected ZIP/XAPK/APKS..."
+              unzip -q download.apks -d original_workspace
+          else
+              echo "📦 Detected Single APK..."
+              mv download.apks original_workspace/base.apk
+          fi
+          
+          # Validasi
           if [ ! -f "original_workspace/base.apk" ]; then
-             echo "❌ Error: Tidak ditemukan 'base.apk'."
+             echo "❌ Error: Tidak ada base.apk. Pastikan link adalah XAPK atau APKS."
+             ls -R original_workspace
              exit 1
           fi
           
-          echo "📂 Membuat 2 Ruang Kerja Terpisah..."
-          cp -r original_workspace workspace_reqable
-          cp -r original_workspace workspace_lspatch
+          cp -r original_workspace/* workspace_reqable/
+          cp -r original_workspace/* workspace_lspatch/
 
-      # ==========================================
-      # VERSI 1: REQABLE ONLY (Network Patch)
-      # ==========================================
-      - name: [Versi 1] Create Reqable Only Version
+      - name: [Versi 1] Reqable Patch
+        continue-on-error: true
         run: |
-          echo "🔵 Memulai Proses Versi Reqable..."
           cd workspace_reqable
-          
-          # Patch Network
           apk-mitm base.apk --certificate ../reqable.pem
           mv base-patched.apk base.apk
           
-          # Loop Cleaning & Signing
-          echo "✍️ Signing Versi Reqable..."
+          # Signing
           for apk in *.apk; do
-             zip -d "$apk" "META-INF/*" 2>/dev/null || true
              zipalign -p -f -v 4 "$apk" "aligned_$apk"
              mv "aligned_$apk" "$apk"
-             apksigner sign --ks ../debug.keystore --ks-pass pass:android --key-pass pass:android "$apk"
+             apksigner sign --ks ../debug.keystore --ks-pass pass:android "$apk"
           done
-          
-          # Pack
           zip -r -q ../Reqable_Version.apks .
-          cd ..
 
-      # ==========================================
-      # VERSI 2: LSPATCH ONLY (Module/Faker)
-      # ==========================================
-      - name: [Versi 2] Create LSPatch Only Version
+      - name: [Versi 2] LSPatch Patch
+        continue-on-error: true
         run: |
-          echo "🟣 Memulai Proses Versi LSPatch..."
           cd workspace_lspatch
-          
-          # Patch Module
           java -jar ../lspatch.jar base.apk -m ../module.apk -f -l 2
           
-          # Rename output lspatch ke base.apk
-          TARGET=$(find . -maxdepth 1 -name "*-lspatched.apk")
-          if [ -z "$TARGET" ]; then
-             echo "❌ Gagal inject LSPatch!"
-             exit 1
+          TARGET=$(find . -name "*-lspatched.apk")
+          if [ ! -z "$TARGET" ]; then
+             mv "$TARGET" base.apk
+             # Signing
+             for apk in *.apk; do
+                zipalign -p -f -v 4 "$apk" "aligned_$apk"
+                mv "aligned_$apk" "$apk"
+                apksigner sign --ks ../debug.keystore --ks-pass pass:android "$apk"
+             done
+             zip -r -q ../LSPatch_Version.apks .
+          else
+             echo "❌ LSPatch Gagal"
           fi
-          mv "$TARGET" base.apk
-          
-          # Loop Cleaning & Signing
-          echo "✍️ Signing Versi LSPatch..."
-          for apk in *.apk; do
-             zip -d "$apk" "META-INF/*" 2>/dev/null || true
-             zipalign -p -f -v 4 "$apk" "aligned_$apk"
-             mv "aligned_$apk" "$apk"
-             apksigner sign --ks ../debug.keystore --ks-pass pass:android --key-pass pass:android "$apk"
-          done
-          
-          # Pack
-          zip -r -q ../LSPatch_Version.apks .
-          cd ..
 
-      - name: Upload Kedua Versi
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Twin_Versions_Pack
+          name: Patched_Results
           path: |
             Reqable_Version.apks
             LSPatch_Version.apks
